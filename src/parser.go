@@ -16,7 +16,6 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/EdlinOrg/prominentcolor"
-	"github.com/PuerkitoBio/goquery"
 	"github.com/cascax/colorthief-go"
 	"github.com/mmcdole/gofeed"
 )
@@ -62,19 +61,6 @@ type FeedResponse struct {
 	Image       *gofeed.Image      `json:"image,omitempty"`
 	Categories  string             `json:"categories,omitempty"`
 	Items       []FeedResponseItem `json:"items"`
-}
-
-func extractThumbnailFromContent(content string) string {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
-	if err != nil {
-		return ""
-	}
-
-	src, exists := doc.Find("img").First().Attr("src")
-	if exists {
-		return src
-	}
-	return ""
 }
 
 func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
@@ -201,14 +187,22 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 					if len(item.Enclosures) > 0 {
 						thumbnail = item.Enclosures[0].URL // Use the first enclosure as the thumbnail
 					}
+					thumbnailFinder := NewThumbnailFinder() // Initialize the ThumbnailFinder
+
 					if thumbnail == "" {
 						if item.Content != "" {
-							thumbnail = extractThumbnailFromContent(item.Content) // Extract from content if not found
+							thumbnail = thumbnailFinder.extractThumbnailFromContent(item.Content) // Extract from content if not found
 						} else if item.Description != "" {
-							thumbnail = extractThumbnailFromContent(item.Description) // Extract from description if content is empty
+							thumbnail = thumbnailFinder.extractThumbnailFromContent(item.Description) // Extract from description if content is empty
+						}
+
+						if thumbnail == "" {
+							thumbnail, err = thumbnailFinder.fetchImageFromSource(item.Link) // Fetch from webpage if not found in content or description
+							if err != nil {
+								thumbnail = ""
+							}
 						}
 					}
-
 					thumbnailColor := RGBColor{0, 0, 0}
 					if thumbnail != "" {
 						r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
