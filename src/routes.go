@@ -5,7 +5,6 @@ import (
 	"net/http"
 )
 
-// errorHandlingMiddleware is a middleware that recovers from any panics and writes a 500 if anything went wrong.
 func errorHandlingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
