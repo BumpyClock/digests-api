@@ -26,6 +26,11 @@ import (
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
+func createHash(s string) string {
+	hash := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(hash[:])
+}
+
 func parseHTMLContent(htmlContent string) string {
 	doc, err := html.Parse(strings.NewReader(htmlContent))
 	if err != nil {
@@ -216,8 +221,7 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 		_, err := url.ParseRequestURI(item.GUID)
 		if err == nil {
 			// item.GUID is a URL, create a hash
-			hash := sha256.Sum256([]byte(item.GUID))
-			item.GUID = hex.EncodeToString(hash[:])
+			item.GUID = createHash(item.GUID)
 		} else {
 			log.Printf("Error parsing GUID: %s %s", err, item.GUID)
 		}
