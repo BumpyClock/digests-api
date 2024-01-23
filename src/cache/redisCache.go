@@ -1,0 +1,77 @@
+package digestsCache
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/go-redis/redis/v8"
+)
+
+var ctx = context.Background()
+
+type RedisCache struct {
+	client *redis.Client
+}
+
+func NewRedisCache(addr string, password string, db int) *RedisCache {
+	client := redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: password,
+		DB:       db,
+	})
+
+	return &RedisCache{client: client}
+}
+
+func (cache *RedisCache) Set(key string, value interface{}, expiration time.Duration) error {
+	jsonValue, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+
+	return cache.client.Set(ctx, key, jsonValue, expiration).Err()
+}
+
+func (cache *RedisCache) Get(key string, dest interface{}) error {
+	val, err := cache.client.Get(ctx, key).Result()
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal([]byte(val), dest)
+}
+
+// FeedItem represents the structure of a feed item.
+// Adjust fields according to your actual feed item structure.
+type FeedItem struct {
+	GUID string `json:"guid"`
+	// Include other fields as necessary.
+}
+
+func (cache *RedisCache) SetFeedItems(key string, newItems []FeedItem, expiration time.Duration) error {
+	// Fetch existing items from cache
+	var existingItems []FeedItem
+	err := cache.Get(key, &existingItems)
+	if err != nil && err != redis.Nil {
+		return err
+	}
+
+	// Deduplication based on GUID
+	itemMap := make(map[string]FeedItem)
+	for _, item := range existingItems {
+		itemMap[item.GUID] = item
+	}
+	for _, newItem := range newItems {
+		itemMap[newItem.GUID] = newItem // This will replace existing items with the same GUID or add new ones
+	}
+
+	// Convert map back to slice
+	uniqueItems := make([]FeedItem, 0, len(itemMap))
+	for _, item := range itemMap {
+		uniqueItems = append(uniqueItems, item)
+	}
+
+	// Cache the deduplicated slice of items
+	return cache.Set(key, uniqueItems, expiration)
+}

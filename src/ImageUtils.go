@@ -244,10 +244,13 @@ func DiscoverFavicon(pageURL string) string {
 				}
 			}
 
-			if relAttr == "icon" || relAttr == "shortcut icon" || relAttr == "apple-touch-icon" {
-				if hrefAttr != "" {
-					favicon = hrefAttr
-					return // Found the favicon, no need to continue searching
+			relValues := strings.Fields(relAttr)
+			for _, relValue := range relValues {
+				if relValue == "icon" || relValue == "shortcut" || relValue == "apple-touch-icon" {
+					if hrefAttr != "" {
+						favicon = hrefAttr
+						return // Found the favicon, no need to continue searching
+					}
 				}
 			}
 		}

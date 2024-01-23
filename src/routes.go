@@ -26,4 +26,6 @@ func InitializeRoutes(mux *http.ServeMux) {
 	mux.Handle("/parse", errorHandlingMiddleware(http.HandlerFunc(parseHandler)))
 
 	mux.Handle("/discover", errorHandlingMiddleware(http.HandlerFunc(discoverHandler)))
+
+	mux.Handle("/getreaderview", errorHandlingMiddleware(http.HandlerFunc(getReaderViewHandler)))
 }
