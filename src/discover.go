@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -9,7 +8,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -17,6 +15,14 @@ import (
 type Urls struct {
 	Urls []string `json:"urls"`
 }
+
+var (
+	feedResultPool = &sync.Pool{
+		New: func() interface{} {
+			return &FeedResult{}
+		},
+	}
+)
 
 func discoverHandler(w http.ResponseWriter, r *http.Request) {
 	var urls Urls
@@ -34,20 +40,19 @@ func discoverHandler(w http.ResponseWriter, r *http.Request) {
 		go func(i int, url string) {
 			defer wg.Done()
 			feedLink, err := discoverRssFeedUrl(url)
+			result := feedResultPool.Get().(*FeedResult)
+			defer feedResultPool.Put(result)
 			if err != nil {
-				results[i] = FeedResult{
-					URL:      url,
-					Status:   "error",
-					Error:    err.Error(),
-					FeedLink: "",
-				}
-				return
+				result.URL = url
+				result.Status = "error"
+				result.Error = err.Error()
+				result.FeedLink = ""
+			} else {
+				result.URL = url
+				result.Status = "ok"
+				result.FeedLink = feedLink
 			}
-			results[i] = FeedResult{
-				URL:      url,
-				Status:   "ok",
-				FeedLink: feedLink,
-			}
+			results[i] = *result
 		}(i, url)
 	}
 	wg.Wait()
@@ -64,23 +69,20 @@ type FeedResult struct {
 }
 
 func discoverRssFeedUrl(urlStr string) (string, error) {
-	if isGitHubRepo(urlStr) {
+	if strings.HasPrefix(urlStr, "https://github.com") {
 		return generateGitHubRssUrl(urlStr), nil
 	}
 
-	if isRedditLink(urlStr) {
+	if strings.HasPrefix(urlStr, "https://www.reddit.com") {
 		return generateRedditRssUrl(urlStr), nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
 	if err != nil {
 		return "", err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -104,16 +106,8 @@ func discoverRssFeedUrl(urlStr string) (string, error) {
 	return rssLink, nil
 }
 
-func isGitHubRepo(url string) bool {
-	return strings.Contains(url, "github.com")
-}
-
 func generateGitHubRssUrl(url string) string {
 	return strings.TrimRight(url, "/") + "/commits/master.atom"
-}
-
-func isRedditLink(url string) bool {
-	return strings.Contains(url, "reddit.com")
 }
 
 func generateRedditRssUrl(url string) string {

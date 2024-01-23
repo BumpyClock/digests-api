@@ -66,6 +66,18 @@ type Feeds struct {
 	Feeds []FeedResponse `json:"feeds"`
 }
 
+type ReaderViewResult struct {
+	URL         string `json:"url"`
+	Status      string `json:"status"`
+	ReaderView  string `json:"content"`
+	Error       error  `json:"error,omitempty"`
+	Title       string `json:"title"`
+	SiteName    string `json:"siteName"`
+	Image       string `json:"image"`
+	Favicon     string `json:"favicon"`
+	TextContent string `json:"textContent"`
+}
+
 // CONSTANTS
 const redis_address = "localhost:6379"
 const redis_password = ""

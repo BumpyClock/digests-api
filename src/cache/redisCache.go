@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/nitishm/go-rejson/v4"
+	"github.com/redis/go-redis/v9"
 )
 
 var ctx = context.Background()
 
 type RedisCache struct {
-	client *redis.Client
+	client  *redis.Client
+	handler *rejson.Handler
 }
 
 func NewRedisCache(addr string, password string, db int) *RedisCache {
@@ -21,25 +23,31 @@ func NewRedisCache(addr string, password string, db int) *RedisCache {
 		DB:       db,
 	})
 
-	return &RedisCache{client: client}
+	handler := rejson.NewReJSONHandler()
+	handler.SetGoRedisClient(client)
+
+	return &RedisCache{client: client, handler: handler}
 }
 
 func (cache *RedisCache) Set(key string, value interface{}, expiration time.Duration) error {
-	jsonValue, err := json.Marshal(value)
+	_, err := cache.handler.JSONSet(key, ".", value)
 	if err != nil {
 		return err
 	}
 
-	return cache.client.Set(ctx, key, jsonValue, expiration).Err()
+	return cache.client.Expire(ctx, key, expiration).Err()
 }
 
 func (cache *RedisCache) Get(key string, dest interface{}) error {
-	val, err := cache.client.Get(ctx, key).Result()
+	val, err := cache.handler.JSONGet(key, ".")
 	if err != nil {
 		return err
 	}
 
-	return json.Unmarshal([]byte(val), dest)
+	// Convert val to []byte, then to string
+	valStr := string(val.([]byte))
+
+	return json.Unmarshal([]byte(valStr), dest)
 }
 
 // FeedItem represents the structure of a feed item.
@@ -74,4 +82,8 @@ func (cache *RedisCache) SetFeedItems(key string, newItems []FeedItem, expiratio
 
 	// Cache the deduplicated slice of items
 	return cache.Set(key, uniqueItems, expiration)
+}
+
+func (cache *RedisCache) Count() (int64, error) {
+	return cache.client.DBSize(ctx).Result()
 }

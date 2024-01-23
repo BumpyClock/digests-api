@@ -10,6 +10,29 @@ import (
 	readability "github.com/go-shiori/go-readability"
 )
 
+func getReaderViewResult(url string) ReaderViewResult {
+	readerView, err := getReaderView(url)
+	if err != nil {
+		return ReaderViewResult{
+			URL:    url,
+			Status: "error",
+			Error:  err,
+		}
+	} else {
+		return ReaderViewResult{
+			URL:         url,
+			Status:      "ok",
+			ReaderView:  readerView.Content,
+			Title:       readerView.Title,
+			SiteName:    readerView.SiteName,
+			Image:       readerView.Image,
+			Favicon:     readerView.Favicon,
+			TextContent: readerView.TextContent,
+		}
+	}
+
+}
+
 func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 	var urls Urls
 	err := json.NewDecoder(r.Body).Decode(&urls)
@@ -25,43 +48,24 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(i int, url string) {
 			defer wg.Done()
-			readerView, err := getReaderView(url)
-			if err != nil {
-				results[i] = ReaderViewResult{
-					URL:    url,
-					Status: "error",
-					Error:  err,
+			cacheKey := createHash(url)
+			var result ReaderViewResult
+			if err := cache.Get(cacheKey, &result); err != nil {
+				result = getReaderViewResult(url)
+				if err := cache.Set(cacheKey, result, 24*time.Hour); err != nil {
+					log.Printf("[ReaderView]Failed to cache reader view for %s: %v", url, err)
 				}
-				return
+			} else {
+				log.Println("[ReaderView]Cache hit for", url)
+				results[i] = result
 			}
-			results[i] = ReaderViewResult{
-				URL:         url,
-				Status:      "ok",
-				ReaderView:  readerView.Content,
-				Title:       readerView.Title,
-				SiteName:    readerView.SiteName,
-				Image:       readerView.Image,
-				Favicon:     readerView.Favicon,
-				TextContent: readerView.TextContent,
-			}
+
 		}(i, url)
 	}
 	wg.Wait()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
-}
-
-type ReaderViewResult struct {
-	URL         string `json:"url"`
-	Status      string `json:"status"`
-	ReaderView  string `json:"content"`
-	Error       error  `json:"error,omitempty"`
-	Title       string `json:"title"`
-	SiteName    string `json:"siteName"`
-	Image       string `json:"image"`
-	Favicon     string `json:"favicon"`
-	TextContent string `json:"textContent"`
 }
 
 func getReaderView(url string) (readability.Article, error) {

@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
-	"net/url"
 	URL "net/url"
 	"strings"
 	"sync"
@@ -54,7 +53,7 @@ func parseHTMLContent(htmlContent string) string {
 
 func isGUID(s string) bool {
 	// Check if s is a URL
-	_, err := url.ParseRequestURI(s)
+	_, err := URL.ParseRequestURI(s)
 	if err == nil {
 		// s is a URL, so it's not a GUID
 		return false
@@ -118,7 +117,48 @@ func processURLs(urls []string) []FeedResponse {
 	return collectResponses(responses)
 }
 
+func isCacheStale(lastRefreshed string) bool {
+	layout := "2006-01-02T15:04:05Z" // updated time format
+	parsedTime, err := time.Parse(layout, lastRefreshed)
+	if err != nil {
+		log.Printf("Failed to parse LastRefreshed: %v", err)
+		return false
+	}
+
+	if time.Since(parsedTime) > 15*time.Minute {
+		log.Println("[Cache Stale] Cache is stale")
+		return true
+	} else {
+		return false
+	}
+}
+
 func processURL(url string) FeedResponse {
+
+	// make sure the url starts with https:// or http:// if it starts with http:// then convert to https://
+	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
+		url = "https://" + url
+	} else if strings.HasPrefix(url, "http://") {
+		url = strings.Replace(url, "http://", "https://", 1)
+	}
+
+	cacheKey := createHash(url)
+
+	var cachedFeed FeedResponse
+	err := cache.Get(cacheKey, &cachedFeed)
+	if err == nil && cachedFeed.SiteTitle != "" {
+		log.Println("[Cache Hit] Using cached feed details for", url)
+		// cachedFeed.LastRefreshed is older than 15 minutes the cache is stale and we should refresh it
+		if isCacheStale(cachedFeed.LastRefreshed) {
+			log.Println("[Cache Stale] Cache is stale for", url)
+		} else {
+			log.Println("[Cache Hit] Cache is fresh for", url)
+			return cachedFeed
+		}
+	} else {
+		log.Println("[Cache Miss] Cache miss for", url)
+	}
+
 	parser := gofeed.NewParser()
 	feed, err := parser.ParseURL(url)
 	if err != nil {
@@ -130,10 +170,18 @@ func processURL(url string) FeedResponse {
 	favicon := getFavicon(feed)
 	baseDomain := getBaseDomain(feed.Link)
 
-	return createFeedResponse(feed, url, baseDomain, favicon, feedItems)
+	response := createFeedResponse(feed, url, baseDomain, favicon, feedItems)
+
+	// Cache the new feed details and items
+	if err := cache.Set(cacheKey, response, 24*time.Hour); err != nil {
+		log.Printf("Failed to cache feed details for %s: %v", url, err)
+	}
+
+	return response
 }
 
 func processFeedItems(items []*gofeed.Item) []FeedResponseItem {
+
 	itemResponses := make(chan FeedResponseItem, len(items))
 	var itemWg sync.WaitGroup
 
@@ -195,10 +243,13 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 
 	// Extract thumbnail from article if not found
 	if thumbnail == "" {
-		article, err := readability.FromURL(item.Link, 30*time.Second)
-		if err == nil {
-			thumbnail = article.Image
+		cacheKey := createHash(item.Link)
+		tempReaderViewResult := getReaderViewResult(item.Link)
+		thumbnail = tempReaderViewResult.Image
+		if err := cache.Set(cacheKey, tempReaderViewResult, 24*time.Hour); err != nil {
+			log.Printf("Failed to cache feed details for %s: %v", item.Link, err)
 		}
+
 	}
 
 	thumbnailColor := RGBColor{128, 128, 128}
@@ -214,18 +265,7 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 		description = parsedContent
 	}
 
-	//create a Hash item.GUID if item.GUID is a url to assign it to item.ID
-	// Check if item.GUID is already a GUID
-	if !isGUID(item.GUID) {
-		// item.GUID is not a GUID, check if it's a URL
-		_, err := url.ParseRequestURI(item.GUID)
-		if err == nil {
-			// item.GUID is a URL, create a hash
-			item.GUID = createHash(item.GUID)
-		} else {
-			log.Printf("Error parsing GUID: %s %s", err, item.GUID)
-		}
-	}
+	item.GUID = createHash(item.Link)
 
 	return FeedResponseItem{
 		ID:              item.GUID,

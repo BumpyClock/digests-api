@@ -7,9 +7,12 @@ import (
 	"strings"
 
 	"golang.org/x/time/rate"
+
+	digestsCache "digests-app-api/cache"
 )
 
 var limiter = rate.NewLimiter(1, 3) // Allow 1 request per second with a burst of 3 requests
+var cache = digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
 
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -94,10 +97,19 @@ func main() {
 	handlerChain = RateLimitMiddleware(handlerChain) // Apply rate limiting next
 	handlerChain = GzipMiddleware(handlerChain)      // Apply Gzip compression last
 
+	log.Println("Opening cache connection...")
+	cachesize, cacheerr := cache.Count()
+	if cacheerr == nil {
+		log.Printf("Cache has %d items", cachesize)
+	} else {
+		log.Printf("Failed to get cache size: %v", cacheerr)
+	}
+
 	log.Println("Server is starting on port 8080...")
 
 	err := http.ListenAndServe(":8080", handlerChain)
 	if err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
+
 }
