@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"image"
-	"image/color"
-	"image/draw"
+
 	_ "image/jpeg"
 	_ "image/png"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,8 +13,7 @@ import (
 
 	"golang.org/x/net/html"
 
-	"github.com/EdlinOrg/prominentcolor"
-	"github.com/cascax/colorthief-go"
+	"github.com/jinzhu/copier"
 	"github.com/mmcdole/gofeed"
 )
 
@@ -33,6 +30,18 @@ type RGBColor struct {
 	B uint8 `json:"b"`
 }
 
+// Add these structs to your existing code
+type MediaContent struct {
+	URL    string `xml:"url,attr"`
+	Width  int    `xml:"width,attr"`
+	Height int    `xml:"height,attr"`
+}
+
+type ExtendedItem struct {
+	*gofeed.Item
+	MediaContent []MediaContent `xml:"http://search.yahoo.com/mrss/ content"`
+}
+
 // FeedResponseItem represents an enriched structure for an individual feed item.
 type FeedResponseItem struct {
 	Title           string              `json:"title"`
@@ -40,83 +49,35 @@ type FeedResponseItem struct {
 	Link            string              `json:"link"`
 	Author          string              `json:"author"`
 	Published       string              `json:"published"`
-	Content         string              `json:"content,omitempty"`
-	Content_Encoded string              `json:"content_encoded,omitempty"`
-	Categories      string              `json:"categories,omitempty"`
-	Enclosures      []*gofeed.Enclosure `json:"enclosures,omitempty"`
-	Thumbnail       string              `json:"thumbnail,omitempty"`
-	ThumbnailColor  RGBColor            `json:"thumbnailColor,omitempty"`
+	Content         string              `json:"content"`
+	Created         string              `json:"created"`
+	Content_Encoded string              `json:"content_encoded"`
+	Categories      string              `json:"categories"`
+	Enclosures      []*gofeed.Enclosure `json:"enclosures"`
+	Thumbnail       string              `json:"thumbnail"`
+	ThumbnailColor  RGBColor            `json:"thumbnailColor"`
 }
 
 // FeedResponse represents the structure for the overall feed, including metadata and items.
 type FeedResponse struct {
-	SiteTitle   string             `json:"siteTitle"`
-	FeedTitle   string             `json:"feedTitle"`
-	Description string             `json:"description"`
-	Link        string             `json:"link"`
-	Updated     string             `json:"updated,omitempty"`
-	Published   string             `json:"published,omitempty"`
-	Author      *gofeed.Person     `json:"author,omitempty"`
-	Language    string             `json:"language,omitempty"`
-	Image       *gofeed.Image      `json:"image,omitempty"`
-	Categories  string             `json:"categories,omitempty"`
-	Items       []FeedResponseItem `json:"items"`
+	Status        string             `json:"status"`
+	SiteTitle     string             `json:"siteTitle"`
+	FeedTitle     string             `json:"feedTitle"`
+	FeedUrl       string             `json:"feedUrl"`
+	Description   string             `json:"description"`
+	Link          string             `json:"link"`
+	LastUpdated   string             `json:"lastUpdated"`
+	LastRefreshed string             `json:"lastRefreshed"`
+	Published     string             `json:"published"`
+	Author        *gofeed.Person     `json:"author"`
+	Language      string             `json:"language"`
+	Favicon       string             `json:"favicon"`
+	Categories    string             `json:"categories"`
+	Items         []FeedResponseItem `json:"items"`
 }
 
-func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
-	if err != nil {
-		return 0, 0, 0
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return 0, 0, 0
-	}
-	defer resp.Body.Close()
-
-	img, _, err := image.Decode(resp.Body)
-	if err != nil {
-		return 0, 0, 0
-	}
-
-	// Convert image.Image to *image.NRGBA
-	bounds := img.Bounds()
-	imgNRGBA := image.NewNRGBA(bounds)
-	draw.Draw(imgNRGBA, bounds, img, bounds.Min, draw.Src)
-
-	// Get the most prominent color
-	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
-	if err != nil || len(colors) == 0 {
-		return 0, 0, 0
-	}
-
-	// Return the RGB components of the most prominent color
-	return uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)
-}
-
-func extractColorFromThumbnail_colorThief(url string) (r, g, b uint8) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return 0, 0, 0
-	}
-	defer resp.Body.Close()
-
-	img, _, err := image.Decode(resp.Body)
-	if err != nil {
-		return 0, 0, 0
-	}
-
-	// Use colorthief-go to get the dominant color as a color.Color
-	dominantColor, err := colorthief.GetColor(img)
-	if err != nil {
-		return 0, 0, 0
-	}
-
-	// Convert color.Color to color.RGBA
-	rgba := color.RGBAModel.Convert(dominantColor).(color.RGBA)
-
-	return rgba.R, rgba.G, rgba.B
+type Feeds struct {
+	Feeds []FeedResponse `json:"feeds"`
 }
 
 func parseHTMLContent(htmlContent string) string {
@@ -164,7 +125,8 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 			parser := gofeed.NewParser()
 			feed, err := parser.ParseURL(url)
 			if err != nil {
-				return // Handle the error as needed
+				log.Printf("Failed to parse URL %s: %v", url, err)
+				return
 			}
 
 			feedItems := make([]FeedResponseItem, 0, len(feed.Items))
@@ -196,6 +158,18 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 							thumbnail = thumbnailFinder.extractThumbnailFromContent(item.Description) // Extract from description if content is empty
 						}
 
+						extItem := &ExtendedItem{}
+						_ = copier.Copy(extItem, item) // Use the copier package to copy the data
+
+						if media, ok := extItem.Extensions["media"]; ok {
+							if content, ok := media["content"]; ok && len(content) > 0 {
+								if url, ok := content[0].Attrs["url"]; ok {
+									extItem.MediaContent = append(extItem.MediaContent, MediaContent{URL: url})
+									thumbnail = url // Use the first media content as the thumbnail
+								}
+							}
+						}
+
 						if thumbnail == "" {
 							thumbnail, err = thumbnailFinder.fetchImageFromSource(item.Link) // Fetch from webpage if not found in content or description
 							if err != nil {
@@ -203,7 +177,7 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
-					thumbnailColor := RGBColor{0, 0, 0}
+					thumbnailColor := RGBColor{128, 128, 128}
 					if thumbnail != "" {
 						r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
 						thumbnailColor = RGBColor{r, g, b}
@@ -222,6 +196,7 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 						Link:            item.Link,
 						Author:          author,
 						Published:       item.Published,
+						Created:         item.Published,
 						Content:         parsedContent,
 						Content_Encoded: item.Content,
 						Categories:      categories,
@@ -243,18 +218,28 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 				feedItems = append(feedItems, itemResponse)
 			}
 
+			favicon := ""
+			if feed.Image != nil {
+				favicon = feed.Image.URL
+			} else {
+				favicon = DiscoverFavicon(feed.Link)
+			}
+
 			response := FeedResponse{
-				SiteTitle:   feed.Title,
-				FeedTitle:   feed.Title,
-				Description: feed.Description,
-				Link:        feed.Link,
-				Updated:     feed.Updated,
-				Published:   feed.Published,
-				Author:      feed.Author,
-				Language:    feed.Language,
-				Image:       feed.Image,
-				Categories:  strings.Join(feed.Categories, ", "),
-				Items:       feedItems,
+				Status:        "ok",
+				SiteTitle:     feed.Title,
+				FeedTitle:     feed.Title,
+				FeedUrl:       url,
+				Description:   feed.Description,
+				Link:          feed.Link,
+				LastUpdated:   feed.Updated,
+				LastRefreshed: time.Now().Format(time.RFC3339),
+				Published:     feed.Published,
+				Author:        feed.Author,
+				Language:      feed.Language,
+				Favicon:       favicon,
+				Categories:    strings.Join(feed.Categories, ", "),
+				Items:         feedItems,
 			}
 
 			responses <- response
@@ -266,11 +251,20 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 		close(responses)
 	}()
 
-	var feedResponses []FeedResponse
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+
+	// Collect all responses
+	var allResponses []FeedResponse
 	for response := range responses {
-		feedResponses = append(feedResponses, response)
+		allResponses = append(allResponses, response)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(feedResponses)
+	feeds := Feeds{Feeds: allResponses}
+
+	// Encode all responses as a single JSON array
+	if err := enc.Encode(feeds); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+		return
+	}
 }

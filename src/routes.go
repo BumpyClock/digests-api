@@ -24,4 +24,6 @@ func InitializeRoutes(mux *http.ServeMux) {
 
 	// Apply the errorHandlingMiddleware to the parseHandler
 	mux.Handle("/parse", errorHandlingMiddleware(http.HandlerFunc(parseHandler)))
+
+	mux.Handle("/discover", errorHandlingMiddleware(http.HandlerFunc(discoverHandler)))
 }

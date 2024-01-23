@@ -1,0 +1,272 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"log"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/disintegration/imaging"
+	"golang.org/x/net/html"
+
+	"github.com/EdlinOrg/prominentcolor"
+	"github.com/PuerkitoBio/goquery"
+	"github.com/cascax/colorthief-go"
+	"github.com/mmcdole/gofeed"
+)
+
+type ThumbnailFinder struct {
+	cache sync.Map
+}
+
+func NewThumbnailFinder() *ThumbnailFinder {
+	return &ThumbnailFinder{}
+}
+
+func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
+	if thumb, ok := tf.cache.Load(item.Link); ok {
+		return thumb.(string)
+	}
+
+	thumbnail := tf.extractThumbnailFromEnclosures(item.Enclosures)
+	if thumbnail != "" {
+		return thumbnail
+	}
+
+	thumbnail = tf.extractThumbnailFromContent(item.Content)
+	if thumbnail != "" {
+		return thumbnail
+	}
+
+	if item.Link != "" {
+		thumbnail, err := tf.fetchImageFromSource(item.Link)
+		if err != nil {
+			fmt.Println("Error fetching image:", err)
+			return ""
+		}
+		tf.cache.Store(item.Link, thumbnail)
+		return thumbnail
+	}
+
+	return ""
+}
+
+func (tf *ThumbnailFinder) extractThumbnailFromEnclosures(enclosures []*gofeed.Enclosure) string {
+	for _, e := range enclosures {
+		if strings.HasPrefix(e.Type, "image/") {
+			return e.URL
+		}
+	}
+	return ""
+}
+
+func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
+	if err != nil {
+		fmt.Println("Error parsing content:", err)
+		return ""
+	}
+
+	if src, exists := doc.Find("img").First().Attr("src"); exists {
+		return src
+	}
+	return ""
+}
+
+func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) {
+	resp, err := http.Get(pageURL)
+	if err != nil {
+		return "", fmt.Errorf("error fetching page: %w", err)
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error loading HTTP response body: %w", err)
+	}
+
+	src, exists := doc.Find("article img, .content img").First().Attr("src")
+	if exists {
+		if !strings.HasPrefix(src, "http") {
+			parsedURL, err := url.Parse(pageURL)
+			if err != nil {
+				return "", err
+			}
+			return parsedURL.Scheme + "://" + parsedURL.Host + src, nil
+		}
+		return src, nil
+	}
+	return "", nil
+}
+
+// fetchImageFromSource fetches the given URL and attempts to find an image.
+func fetchImageFromSource(pageURL string) (string, error) {
+	// Custom logic for specific domains can be added here
+	resp, err := http.Get(pageURL)
+	if err != nil {
+		return "", fmt.Errorf("error fetching page: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Use goquery to parse the HTML
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error loading HTTP response body: %w", err)
+	}
+
+	// Attempt to find an image
+	src, exists := doc.Find("article img, .content img").First().Attr("src")
+	if exists {
+		// Handle relative URLs
+		if !strings.HasPrefix(src, "http") {
+			parsedURL, err := url.Parse(pageURL)
+			if err != nil {
+				return "", err
+			}
+			return parsedURL.Scheme + "://" + parsedURL.Host + src, nil
+		}
+		return src, nil
+	}
+	return "", nil
+}
+
+func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
+
+	if url == "" {
+		return 128, 128, 128 // RGB values for gray
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return 128, 128, 128
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 128, 128, 128
+	}
+	defer resp.Body.Close()
+
+	img, _, err := image.Decode(resp.Body)
+	if err != nil {
+		return 128, 128, 128
+	}
+
+	resizedImage := imaging.Resize(img, 100, 0, imaging.Lanczos)
+
+	// Convert image.Image to *image.NRGBA
+	bounds := resizedImage.Bounds()
+	imgNRGBA := image.NewNRGBA(bounds)
+	draw.Draw(imgNRGBA, bounds, resizedImage, bounds.Min, draw.Src)
+
+	// Get the most prominent color
+	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
+	if err != nil || len(colors) == 0 {
+		return 128, 128, 128
+	}
+
+	// Return the RGB components of the most prominent color
+	return uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)
+}
+
+func extractColorFromThumbnail_colorThief(url string) (r, g, b uint8) {
+	if url == "" {
+		return 128, 128, 128 // RGB values for gray
+	}
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0, 0, 0
+	}
+	defer resp.Body.Close()
+
+	img, _, err := image.Decode(resp.Body)
+	if err != nil {
+		return 0, 0, 0
+	}
+
+	// Use colorthief-go to get the dominant color as a color.Color
+	dominantColor, err := colorthief.GetColor(img)
+	if err != nil {
+		return 0, 0, 0
+	}
+
+	// Convert color.Color to color.RGBA
+	rgba := color.RGBAModel.Convert(dominantColor).(color.RGBA)
+
+	return rgba.R, rgba.G, rgba.B
+}
+
+// DiscoverFavicon fetches the webpage at the given URL and attempts to find a favicon.
+func DiscoverFavicon(pageURL string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
+	if err != nil {
+		log.Printf("Error creating request for favicon discovery: %v", err)
+		return ""
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Printf("Error fetching page for favicon: %v", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	// Parse the HTML document
+	doc, err := html.Parse(resp.Body)
+	if err != nil {
+		log.Printf("Error parsing HTML for favicon: %v", err)
+		return ""
+	}
+
+	var favicon string
+	var findNodes func(*html.Node)
+	findNodes = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "link" {
+			relAttr := ""
+			hrefAttr := ""
+			for _, attr := range n.Attr {
+				if attr.Key == "rel" {
+					relAttr = attr.Val
+				} else if attr.Key == "href" {
+					hrefAttr = attr.Val
+				}
+			}
+
+			if relAttr == "icon" || relAttr == "shortcut icon" || relAttr == "apple-touch-icon" {
+				if hrefAttr != "" {
+					favicon = hrefAttr
+					return // Found the favicon, no need to continue searching
+				}
+			}
+		}
+
+		for c := n.FirstChild; c != nil && favicon == ""; c = c.NextSibling {
+			findNodes(c) // Recursive search
+		}
+	}
+
+	findNodes(doc)
+
+	// Resolve relative favicon URL
+	if favicon != "" && !strings.HasPrefix(favicon, "http") {
+		if parsedFaviconURL, err := url.Parse(favicon); err == nil {
+			if baseUrl, err := url.Parse(pageURL); err == nil {
+				favicon = baseUrl.ResolveReference(parsedFaviconURL).String()
+			}
+		}
+	}
+
+	return favicon
+}
