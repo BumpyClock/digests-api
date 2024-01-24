@@ -14,7 +14,8 @@ import (
 )
 
 var limiter = rate.NewLimiter(1, 3) // Allow 1 request per second with a burst of 3 requests
-var cache, cacheErr = digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
+var cache *digestsCache.RedisCache
+var cacheErr error
 var log = logrus.New()
 
 func GzipMiddleware(next http.Handler) http.Handler {
@@ -101,6 +102,7 @@ func main() {
 	handlerChain = GzipMiddleware(handlerChain)      // Apply Gzip compression last
 
 	log.Info("Opening cache connection...")
+	cache, cacheErr = digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
 	cachesize, cacheerr := cache.Count()
 	if cacheerr == nil {
 		log.Infof("Cache has %d items", cachesize)

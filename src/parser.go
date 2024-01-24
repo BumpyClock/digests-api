@@ -51,17 +51,17 @@ func parseHTMLContent(htmlContent string) string {
 	return textContent.String()
 }
 
-func isGUID(s string) bool {
-	// Check if s is a URL
-	_, err := URL.ParseRequestURI(s)
-	if err == nil {
-		// s is a URL, so it's not a GUID
-		return false
-	}
+// func isGUID(s string) bool {
+// 	// Check if s is a URL
+// 	_, err := URL.ParseRequestURI(s)
+// 	if err == nil {
+// 		// s is a URL, so it's not a GUID
+// 		return false
+// 	}
 
-	// If it's not a URL, we assume it's a GUID
-	return true
-}
+// 	// If it's not a URL, we assume it's a GUID
+// 	return true
+// }
 
 func getBaseDomain(url string) string {
 	parsedURL, err := URL.Parse(url)

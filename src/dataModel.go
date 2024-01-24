@@ -82,5 +82,6 @@ type ReaderViewResult struct {
 const redis_address = "localhost:6379"
 const redis_password = ""
 const redis_db = 0
-const redis_feedsItems_key = "feedsItems"
-const redis_feedDetails_key = "feedDetails"
+
+// const redis_feedsItems_key = "feedsItems"
+// const redis_feedDetails_key = "feedDetails"
