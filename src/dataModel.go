@@ -80,7 +80,7 @@ type ReaderViewResult struct {
 }
 
 // CONSTANTS
-const redis_address = "localhost:6379"
+
 const redis_password = ""
 const redis_db = 0
 const feed_prefix = "feed:"

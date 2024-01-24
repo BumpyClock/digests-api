@@ -50,15 +50,15 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 			cacheKey := createHash(url)
 			var result ReaderViewResult
 			if err := cache.Get(readerView_prefix, cacheKey, &result); err != nil {
+				log.Println("[ReaderView]Cache miss for", url)
 				result = getReaderViewResult(url)
-				if err := cache.Set(readerView_prefix, cacheKey, result, 24*time.Hour); err != nil {
+				if err := cache.Set(readerView_prefix, cacheKey, result, 1*time.Hour); err != nil {
 					log.Printf("[ReaderView]Failed to cache reader view for %s: %v", url, err)
 				}
 			} else {
 				log.Println("[ReaderView]Cache hit for", url)
-				results[i] = result
 			}
-
+			results[i] = result
 		}(i, url)
 	}
 	wg.Wait()

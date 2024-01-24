@@ -13,6 +13,7 @@ import (
 
 	digestsCache "digests-app-api/cache"
 
+	"github.com/rs/cors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,6 +24,7 @@ var log = logrus.New()
 var urlList []string
 var urlListMutex = &sync.Mutex{}
 var refresh_timer = 15
+var redis_address = "localhost:6379"
 
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,16 +101,18 @@ func CORSMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
-	port := flag.String("port", "8080", "port to run the application on")
+	port := flag.String("port", "8000", "port to run the application on")
 	timer := flag.Int("timer", 15, "timer to refresh the cache")
+	redis := flag.String("redis", "localhost:6379", "redis address")
 	flag.Parse()
 	mux := http.NewServeMux()
 	InitializeRoutes(mux) // Assuming you've defined this to set up routes
 
 	// Wrap the mux with the middleware
-	handlerChain := CORSMiddleware(mux)              // Apply CORS first
+	handlerChain := cors.Default().Handler(mux)      // Apply CORS first
 	handlerChain = RateLimitMiddleware(handlerChain) // Apply rate limiting next
 	handlerChain = GzipMiddleware(handlerChain)      // Apply Gzip compression last
+	redis_address = *redis
 
 	log.Info("Opening cache connection...")
 	cache, cacheErr = digestsCache.NewRedisCache(redis_address, redis_password, redis_db)

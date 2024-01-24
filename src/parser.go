@@ -385,17 +385,17 @@ func addURLToList(url string) {
 	urlList = append(urlList, url)
 }
 
-func removeURLFromList(url string) {
-	urlListMutex.Lock()
-	defer urlListMutex.Unlock()
+// func removeURLFromList(url string) {
+// 	urlListMutex.Lock()
+// 	defer urlListMutex.Unlock()
 
-	for i, u := range urlList {
-		if u == url {
-			urlList = append(urlList[:i], urlList[i+1:]...)
-			break
-		}
-	}
-}
+// 	for i, u := range urlList {
+// 		if u == url {
+// 			urlList = append(urlList[:i], urlList[i+1:]...)
+// 			break
+// 		}
+// 	}
+// }
 
 func getAllCachedURLs() []string {
 	urlListMutex.Lock()

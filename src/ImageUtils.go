@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"image/color"
 	"image/draw"
 	"net/http"
 	"net/url"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/EdlinOrg/prominentcolor"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/cascax/colorthief-go"
 	"github.com/mmcdole/gofeed"
 )
 
@@ -106,35 +104,35 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 }
 
 // fetchImageFromSource fetches the given URL and attempts to find an image.
-func fetchImageFromSource(pageURL string) (string, error) {
-	// Custom logic for specific domains can be added here
-	resp, err := http.Get(pageURL)
-	if err != nil {
-		return "", fmt.Errorf("error fetching page: %w", err)
-	}
-	defer resp.Body.Close()
+// func fetchImageFromSource(pageURL string) (string, error) {
+// 	// Custom logic for specific domains can be added here
+// 	resp, err := http.Get(pageURL)
+// 	if err != nil {
+// 		return "", fmt.Errorf("error fetching page: %w", err)
+// 	}
+// 	defer resp.Body.Close()
 
-	// Use goquery to parse the HTML
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("error loading HTTP response body: %w", err)
-	}
+// 	// Use goquery to parse the HTML
+// 	doc, err := goquery.NewDocumentFromReader(resp.Body)
+// 	if err != nil {
+// 		return "", fmt.Errorf("error loading HTTP response body: %w", err)
+// 	}
 
-	// Attempt to find an image
-	src, exists := doc.Find("article img, .content img").First().Attr("src")
-	if exists {
-		// Handle relative URLs
-		if !strings.HasPrefix(src, "http") {
-			parsedURL, err := url.Parse(pageURL)
-			if err != nil {
-				return "", err
-			}
-			return parsedURL.Scheme + "://" + parsedURL.Host + src, nil
-		}
-		return src, nil
-	}
-	return "", nil
-}
+// 	// Attempt to find an image
+// 	src, exists := doc.Find("article img, .content img").First().Attr("src")
+// 	if exists {
+// 		// Handle relative URLs
+// 		if !strings.HasPrefix(src, "http") {
+// 			parsedURL, err := url.Parse(pageURL)
+// 			if err != nil {
+// 				return "", err
+// 			}
+// 			return parsedURL.Scheme + "://" + parsedURL.Host + src, nil
+// 		}
+// 		return src, nil
+// 	}
+// 	return "", nil
+// }
 
 func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 
@@ -175,32 +173,32 @@ func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 	return uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)
 }
 
-func extractColorFromThumbnail_colorThief(url string) (r, g, b uint8) {
-	if url == "" {
-		return 128, 128, 128 // RGB values for gray
-	}
-	resp, err := http.Get(url)
-	if err != nil {
-		return 0, 0, 0
-	}
-	defer resp.Body.Close()
+// func extractColorFromThumbnail_colorThief(url string) (r, g, b uint8) {
+// 	if url == "" {
+// 		return 128, 128, 128 // RGB values for gray
+// 	}
+// 	resp, err := http.Get(url)
+// 	if err != nil {
+// 		return 0, 0, 0
+// 	}
+// 	defer resp.Body.Close()
 
-	img, _, err := image.Decode(resp.Body)
-	if err != nil {
-		return 0, 0, 0
-	}
+// 	img, _, err := image.Decode(resp.Body)
+// 	if err != nil {
+// 		return 0, 0, 0
+// 	}
 
-	// Use colorthief-go to get the dominant color as a color.Color
-	dominantColor, err := colorthief.GetColor(img)
-	if err != nil {
-		return 0, 0, 0
-	}
+// 	// Use colorthief-go to get the dominant color as a color.Color
+// 	dominantColor, err := colorthief.GetColor(img)
+// 	if err != nil {
+// 		return 0, 0, 0
+// 	}
 
-	// Convert color.Color to color.RGBA
-	rgba := color.RGBAModel.Convert(dominantColor).(color.RGBA)
+// 	// Convert color.Color to color.RGBA
+// 	rgba := color.RGBAModel.Convert(dominantColor).(color.RGBA)
 
-	return rgba.R, rgba.G, rgba.B
-}
+// 	return rgba.R, rgba.G, rgba.B
+// }
 
 // DiscoverFavicon fetches the webpage at the given URL and attempts to find a favicon.
 func DiscoverFavicon(pageURL string) string {
