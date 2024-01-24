@@ -20,6 +20,7 @@ import (
 	readability "github.com/go-shiori/go-readability"
 	"github.com/jinzhu/copier"
 	"github.com/mmcdole/gofeed"
+	"github.com/sirupsen/logrus"
 )
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -133,7 +134,6 @@ func isCacheStale(lastRefreshed string) bool {
 }
 
 func processURL(url string) FeedResponse {
-
 	// make sure the url starts with https:// or http:// if it starts with http:// then convert to https://
 	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
 		url = "https://" + url
@@ -146,22 +146,33 @@ func processURL(url string) FeedResponse {
 	var cachedFeed FeedResponse
 	err := cache.Get(cacheKey, &cachedFeed)
 	if err == nil && cachedFeed.SiteTitle != "" {
-		log.Println("[Cache Hit] Using cached feed details for", url)
+		log.WithFields(logrus.Fields{
+			"url": url,
+		}).Info("[Cache Hit] Using cached feed details")
 		// cachedFeed.LastRefreshed is older than 15 minutes the cache is stale and we should refresh it
 		if isCacheStale(cachedFeed.LastRefreshed) {
-			log.Println("[Cache Stale] Cache is stale for", url)
+			log.WithFields(logrus.Fields{
+				"url": url,
+			}).Info("[Cache Stale] Cache is stale")
 		} else {
-			log.Println("[Cache Hit] Cache is fresh for", url)
+			log.WithFields(logrus.Fields{
+				"url": url,
+			}).Info("[Cache Hit] Cache is fresh")
 			return cachedFeed
 		}
 	} else {
-		log.Println("[Cache Miss] Cache miss for", url)
+		log.WithFields(logrus.Fields{
+			"url": url,
+		}).Info("[Cache Miss] Cache miss")
 	}
 
 	parser := gofeed.NewParser()
 	feed, err := parser.ParseURL(url)
 	if err != nil {
-		log.Printf("Failed to parse URL %s: %v", url, err)
+		log.WithFields(logrus.Fields{
+			"url":   url,
+			"error": err,
+		}).Error("Failed to parse URL")
 		return FeedResponse{}
 	}
 
@@ -173,7 +184,10 @@ func processURL(url string) FeedResponse {
 
 	// Cache the new feed details and items
 	if err := cache.Set(cacheKey, response, 24*time.Hour); err != nil {
-		log.Printf("Failed to cache feed details for %s: %v", url, err)
+		log.WithFields(logrus.Fields{
+			"url":   url,
+			"error": err,
+		}).Error("Failed to cache feed details")
 	}
 
 	return response

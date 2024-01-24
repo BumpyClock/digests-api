@@ -12,6 +12,7 @@ import (
 func getReaderViewResult(url string) ReaderViewResult {
 	readerView, err := getReaderView(url)
 	if err != nil {
+		log.Errorf("Error getting reader view for %s: %v", url, err)
 		return ReaderViewResult{
 			URL:    url,
 			Status: "error",
@@ -29,7 +30,6 @@ func getReaderViewResult(url string) ReaderViewResult {
 			TextContent: readerView.TextContent,
 		}
 	}
-
 }
 
 func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
@@ -68,11 +68,10 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getReaderView(url string) (readability.Article, error) {
-	article := readability.Article{}
 	article, err := readability.FromURL(url, 30*time.Second)
 	if err != nil {
-		log.Fatalf("failed to parse %s, %v\n", url, err)
-		return article, err
+		log.Errorf("failed to parse %s, %v\n", url, err)
+		return readability.Article{}, err
 	}
 
 	return article, nil
