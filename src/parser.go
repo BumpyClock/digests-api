@@ -125,7 +125,7 @@ func isCacheStale(lastRefreshed string) bool {
 		return false
 	}
 
-	if time.Since(parsedTime) > 15*time.Minute {
+	if time.Since(parsedTime) > time.Duration(refresh_timer)*time.Minute {
 		log.Println("[Cache Stale] Cache is stale")
 		return true
 	} else {
@@ -144,7 +144,7 @@ func processURL(url string) FeedResponse {
 	cacheKey := createHash(url)
 
 	var cachedFeed FeedResponse
-	err := cache.Get(cacheKey, &cachedFeed)
+	err := cache.Get(feed_prefix, cacheKey, &cachedFeed)
 	if err == nil && cachedFeed.SiteTitle != "" {
 		log.WithFields(logrus.Fields{
 			"url": url,
@@ -179,11 +179,12 @@ func processURL(url string) FeedResponse {
 	feedItems := processFeedItems(feed.Items)
 	favicon := getFavicon(feed)
 	baseDomain := getBaseDomain(feed.Link)
+	addURLToList(url)
 
 	response := createFeedResponse(feed, url, baseDomain, favicon, feedItems)
 
 	// Cache the new feed details and items
-	if err := cache.Set(cacheKey, response, 24*time.Hour); err != nil {
+	if err := cache.Set(feed_prefix, cacheKey, response, 24*time.Hour); err != nil {
 		log.WithFields(logrus.Fields{
 			"url":   url,
 			"error": err,
@@ -259,7 +260,7 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 		cacheKey := createHash(item.Link)
 		tempReaderViewResult := getReaderViewResult(item.Link)
 		thumbnail = tempReaderViewResult.Image
-		if err := cache.Set(cacheKey, tempReaderViewResult, 24*time.Hour); err != nil {
+		if err := cache.Set(readerView_prefix, cacheKey, tempReaderViewResult, 24*time.Hour); err != nil {
 			log.Printf("Failed to cache feed details for %s: %v", item.Link, err)
 		}
 
@@ -322,6 +323,7 @@ func getFavicon(feed *gofeed.Feed) string {
 func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, feedItems []FeedResponseItem) FeedResponse {
 	return FeedResponse{
 		Status:        "ok",
+		GUID:          createHash(url),
 		SiteTitle:     feed.Title,
 		FeedTitle:     feed.Title,
 		FeedUrl:       url,
@@ -363,4 +365,59 @@ func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
 	if err := enc.Encode(feeds); err != nil {
 		log.Printf("Failed to encode response: %v", err)
 	}
+}
+
+// Feed refresh logic
+
+func refreshFeeds() {
+	urls := getAllCachedURLs() // This function should return all URLs from the cache
+
+	for _, url := range urls {
+		log.Printf("Refreshing feed for URL: %s", url)
+		_ = processURL(url) // Refresh the feed and ignore the result
+	}
+}
+
+func addURLToList(url string) {
+	urlListMutex.Lock()
+	defer urlListMutex.Unlock()
+
+	urlList = append(urlList, url)
+}
+
+func removeURLFromList(url string) {
+	urlListMutex.Lock()
+	defer urlListMutex.Unlock()
+
+	for i, u := range urlList {
+		if u == url {
+			urlList = append(urlList[:i], urlList[i+1:]...)
+			break
+		}
+	}
+}
+
+func getAllCachedURLs() []string {
+	urlListMutex.Lock()
+	defer urlListMutex.Unlock()
+
+	if len(urlList) == 0 {
+		startTime := time.Now() // Record the start time
+
+		var err error
+		urlList, err = cache.GetSubscribedListsFromCache(feed_prefix)
+		if err != nil {
+			// Handle the error
+			log.Println("Failed to get subscribed lists from cache:", err)
+			return nil
+		}
+
+		duration := time.Since(startTime) // Calculate the duration
+
+		// Log the urlList and the duration
+		log.Infof("Loaded urlList from cache: %s", urlList)
+		log.Infof("Time taken to load urlList: %s", duration)
+	}
+
+	return append([]string(nil), urlList...)
 }

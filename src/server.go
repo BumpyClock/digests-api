@@ -2,6 +2,9 @@ package main
 
 import (
 	"compress/gzip"
+	"flag"
+	"sync"
+	"time"
 
 	"net/http"
 	"strings"
@@ -17,6 +20,9 @@ var limiter = rate.NewLimiter(1, 3) // Allow 1 request per second with a burst o
 var cache *digestsCache.RedisCache
 var cacheErr error
 var log = logrus.New()
+var urlList []string
+var urlListMutex = &sync.Mutex{}
+var refresh_timer = 15
 
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +99,9 @@ func CORSMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+	port := flag.String("port", "8080", "port to run the application on")
+	timer := flag.Int("timer", 15, "timer to refresh the cache")
+	flag.Parse()
 	mux := http.NewServeMux()
 	InitializeRoutes(mux) // Assuming you've defined this to set up routes
 
@@ -110,9 +119,24 @@ func main() {
 		log.Errorf("Failed to get cache size: %v", cacheerr)
 	}
 
-	log.Info("Server is starting on port 8080...")
+	refresh_timer = *timer
 
-	err := http.ListenAndServe(":8080", handlerChain)
+	refreshFeeds()
+
+	go func() {
+		ticker := time.NewTicker(time.Duration(*timer) * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			log.Info("Refreshing cache...")
+			refreshFeeds()
+			log.Infof("Cache refreshed %v, %v", time.Now().Format(time.RFC3339), urlList)
+		}
+	}()
+
+	log.Infof("Server is starting on port %v...", *port)
+
+	err := http.ListenAndServe(":"+*port, handlerChain)
 	if err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}

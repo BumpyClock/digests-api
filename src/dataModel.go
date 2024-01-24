@@ -46,6 +46,7 @@ type FeedResponseItem struct {
 
 // FeedResponse represents the structure for the overall feed, including metadata and items.
 type FeedResponse struct {
+	GUID          string             `json:"guid"`
 	Status        string             `json:"status"`
 	SiteTitle     string             `json:"siteTitle"`
 	FeedTitle     string             `json:"feedTitle"`
@@ -82,6 +83,8 @@ type ReaderViewResult struct {
 const redis_address = "localhost:6379"
 const redis_password = ""
 const redis_db = 0
+const feed_prefix = "feed:"
+const readerView_prefix = "readerViewContent:"
 
 // const redis_feedsItems_key = "feedsItems"
 // const redis_feedDetails_key = "feedDetails"
