@@ -7,47 +7,78 @@ import (
 
 	"github.com/nitishm/go-rejson/v4"
 	"github.com/redis/go-redis/v9"
+	"github.com/sirupsen/logrus"
 )
 
 var ctx = context.Background()
+var log = logrus.New()
 
 type RedisCache struct {
 	client  *redis.Client
 	handler *rejson.Handler
 }
 
-func NewRedisCache(addr string, password string, db int) *RedisCache {
+func NewRedisCache(addr string, password string, db int) (*RedisCache, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:     addr,
 		Password: password,
 		DB:       db,
 	})
 
+	_, err := client.Ping(context.Background()).Result()
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"address":  addr,
+			"database": db,
+		}).Error("Failed to connect to Redis")
+		return nil, err
+	}
+
 	handler := rejson.NewReJSONHandler()
 	handler.SetGoRedisClient(client)
 
-	return &RedisCache{client: client, handler: handler}
+	return &RedisCache{client: client, handler: handler}, nil
 }
 
 func (cache *RedisCache) Set(key string, value interface{}, expiration time.Duration) error {
 	_, err := cache.handler.JSONSet(key, ".", value)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to set key in Redis")
 		return err
 	}
 
-	return cache.client.Expire(ctx, key, expiration).Err()
+	err = cache.client.Expire(ctx, key, expiration).Err()
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to set expiration for key in Redis")
+	}
+
+	return err
 }
 
 func (cache *RedisCache) Get(key string, dest interface{}) error {
 	val, err := cache.handler.JSONGet(key, ".")
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to get key from Redis")
 		return err
 	}
 
 	// Convert val to []byte, then to string
 	valStr := string(val.([]byte))
 
-	return json.Unmarshal([]byte(valStr), dest)
+	err = json.Unmarshal([]byte(valStr), dest)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to unmarshal value for key from Redis")
+	}
+
+	return err
 }
 
 // FeedItem represents the structure of a feed item.

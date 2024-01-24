@@ -9,7 +9,6 @@ import (
 
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
 	"net/http"
 	URL "net/url"
 	"strings"

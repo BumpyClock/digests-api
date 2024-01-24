@@ -6,7 +6,6 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
