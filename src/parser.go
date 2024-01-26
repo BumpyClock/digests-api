@@ -23,7 +23,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var httpClient = &http.Client{Timeout: 10 * time.Second}
+var httpClient = &http.Client{Timeout: 20 * time.Second}
 
 func createHash(s string) string {
 	hash := sha256.Sum256([]byte(s))

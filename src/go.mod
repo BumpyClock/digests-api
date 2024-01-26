@@ -7,6 +7,7 @@ require golang.org/x/sync v0.6.0
 require (
 	github.com/EdlinOrg/prominentcolor v1.0.0 // indirect
 	github.com/PuerkitoBio/goquery v1.8.1 // indirect
+	github.com/andybalholm/brotli v1.0.5 // indirect
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/cascax/colorthief-go v0.0.0-20200408142718-f393563c12c5 // indirect
@@ -21,6 +22,7 @@ require (
 	github.com/jinzhu/copier v0.4.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kennykarnama/color-thief v0.0.0-20230222041546-c1bf65ec0808 // indirect
+	github.com/klauspost/compress v1.17.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.26 // indirect
 	github.com/mmcdole/gofeed v1.2.1 // indirect
@@ -34,6 +36,8 @@ require (
 	github.com/redis/go-redis/v9 v9.4.0 // indirect
 	github.com/rs/cors v1.10.1 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	github.com/valyala/fasthttp v1.51.0 // indirect
 	golang.org/x/image v0.15.0 // indirect
 	golang.org/x/net v0.20.0 // indirect
 	golang.org/x/sys v0.16.0 // indirect
