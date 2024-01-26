@@ -99,7 +99,7 @@ func CORSMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
-	port := flag.String("port", "8000", "port to run the application on")
+	port := flag.String("port", "8080", "port to run the application on")
 	timer := flag.Int("timer", 15, "timer to refresh the cache")
 	flag.Parse()
 	mux := http.NewServeMux()
