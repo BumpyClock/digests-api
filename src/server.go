@@ -3,11 +3,11 @@ package main
 import (
 	"compress/gzip"
 	"flag"
+	"net/http"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
-
-	"net/http"
-	"strings"
 
 	"golang.org/x/time/rate"
 
@@ -25,6 +25,7 @@ var urlList []string
 var urlListMutex = &sync.Mutex{}
 var refresh_timer = 15
 var redis_address = "localhost:6379"
+var numWorkers = runtime.NumCPU()
 
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +148,7 @@ func main() {
 	log.Infof("Feed freshness timer is %v minutes", refresh_timer)
 	log.Infof("Rate limit is %v requests per second", limiter.Limit())
 	log.Infof("Redis address is %v", redis_address)
+	log.Infof("Number of workers is %v", numWorkers)
 
 	err := http.ListenAndServe(":"+*port, handlerChain)
 	if err != nil {
