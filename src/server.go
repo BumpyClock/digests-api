@@ -102,7 +102,7 @@ func CORSMiddleware(next http.Handler) http.Handler {
 
 func main() {
 	port := flag.String("port", "8000", "port to run the application on")
-	timer := flag.Int("timer", 15, "timer to refresh the cache")
+	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
 	redis := flag.String("redis", "localhost:6379", "redis address")
 	flag.Parse()
 	mux := http.NewServeMux()
@@ -132,7 +132,7 @@ func main() {
 	refreshFeeds()
 
 	go func() {
-		ticker := time.NewTicker(time.Duration(*timer) * time.Minute)
+		ticker := time.NewTicker(time.Duration(refresh_timer*4) * time.Minute)
 		defer ticker.Stop()
 
 		for range ticker.C {
@@ -143,6 +143,10 @@ func main() {
 	}()
 
 	log.Infof("Server is starting on port %v...", *port)
+	log.Infof("Cache auto refresh timer is %v minutes", refresh_timer*4)
+	log.Infof("Feed freshness timer is %v minutes", refresh_timer)
+	log.Infof("Rate limit is %v requests per second", limiter.Limit())
+	log.Infof("Redis address is %v", redis_address)
 
 	err := http.ListenAndServe(":"+*port, handlerChain)
 	if err != nil {

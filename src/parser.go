@@ -133,6 +133,38 @@ func isCacheStale(lastRefreshed string) bool {
 	}
 }
 
+func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
+	parser := gofeed.NewParser()
+	feed, err := parser.ParseURL(url)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   url,
+			"error": err,
+		}).Error("Failed to parse URL")
+		return FeedResponse{}, err
+	}
+
+	feedItems := processFeedItems(feed.Items)
+	favicon := getFavicon(feed)
+	baseDomain := getBaseDomain(feed.Link)
+	addURLToList(url)
+
+	response := createFeedResponse(feed, url, baseDomain, favicon, feedItems)
+
+	// Cache the new feed details and items
+	if err := cache.Set(feed_prefix, cacheKey, response, 24*time.Hour); err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   url,
+			"error": err,
+		}).Error("Failed to cache feed details")
+		return FeedResponse{}, err
+	}
+
+	log.Infof("Successfully cached feed details for %s", url)
+
+	return response, nil
+}
+
 func processURL(url string) FeedResponse {
 	// make sure the url starts with https:// or http:// if it starts with http:// then convert to https://
 	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
@@ -153,42 +185,40 @@ func processURL(url string) FeedResponse {
 		if isCacheStale(cachedFeed.LastRefreshed) {
 			log.WithFields(logrus.Fields{
 				"url": url,
-			}).Info("[Cache Stale] Cache is stale")
+			}).Info("[Cache Stale] for")
+			go func() {
+				_, err := fetchAndCacheFeed(url, cacheKey)
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"url":   url,
+						"error": err,
+					}).Error("Failed to refresh feed")
+				}
+			}()
 		} else {
 			log.WithFields(logrus.Fields{
 				"url": url,
 			}).Info("[Cache Hit] Cache is fresh")
-			return cachedFeed
 		}
+		return cachedFeed
 	} else {
 		log.WithFields(logrus.Fields{
 			"url": url,
 		}).Info("[Cache Miss] Cache miss")
 	}
 
-	parser := gofeed.NewParser()
-	feed, err := parser.ParseURL(url)
+	response, err := fetchAndCacheFeed(url, cacheKey)
 	if err != nil {
 		log.WithFields(logrus.Fields{
 			"url":   url,
 			"error": err,
-		}).Error("Failed to parse URL")
-		return FeedResponse{}
-	}
-
-	feedItems := processFeedItems(feed.Items)
-	favicon := getFavicon(feed)
-	baseDomain := getBaseDomain(feed.Link)
-	addURLToList(url)
-
-	response := createFeedResponse(feed, url, baseDomain, favicon, feedItems)
-
-	// Cache the new feed details and items
-	if err := cache.Set(feed_prefix, cacheKey, response, 24*time.Hour); err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   url,
-			"error": err,
-		}).Error("Failed to cache feed details")
+		}).Error("Failed to fetch and cache feed")
+		return FeedResponse{
+			FeedUrl: url,
+			GUID:    cacheKey,
+			Status:  "error",
+			Error:   err,
+		}
 	}
 
 	return response
@@ -336,7 +366,7 @@ func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, feed
 		Language:      feed.Language,
 		Favicon:       favicon,
 		Categories:    strings.Join(feed.Categories, ", "),
-		Items:         feedItems,
+		Items:         &feedItems,
 	}
 }
 

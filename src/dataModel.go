@@ -46,21 +46,22 @@ type FeedResponseItem struct {
 
 // FeedResponse represents the structure for the overall feed, including metadata and items.
 type FeedResponse struct {
-	GUID          string             `json:"guid"`
-	Status        string             `json:"status"`
-	SiteTitle     string             `json:"siteTitle"`
-	FeedTitle     string             `json:"feedTitle"`
-	FeedUrl       string             `json:"feedUrl"`
-	Description   string             `json:"description"`
-	Link          string             `json:"link"`
-	LastUpdated   string             `json:"lastUpdated"`
-	LastRefreshed string             `json:"lastRefreshed"`
-	Published     string             `json:"published"`
-	Author        *gofeed.Person     `json:"author"`
-	Language      string             `json:"language"`
-	Favicon       string             `json:"favicon"`
-	Categories    string             `json:"categories"`
-	Items         []FeedResponseItem `json:"items"`
+	GUID          string              `json:"guid"`
+	Status        string              `json:"status"`
+	Error         error               `json:"error,omitempty"`
+	SiteTitle     string              `json:"siteTitle"`
+	FeedTitle     string              `json:"feedTitle"`
+	FeedUrl       string              `json:"feedUrl"`
+	Description   string              `json:"description"`
+	Link          string              `json:"link"`
+	LastUpdated   string              `json:"lastUpdated"`
+	LastRefreshed string              `json:"lastRefreshed"`
+	Published     string              `json:"published"`
+	Author        *gofeed.Person      `json:"author"`
+	Language      string              `json:"language"`
+	Favicon       string              `json:"favicon"`
+	Categories    string              `json:"categories"`
+	Items         *[]FeedResponseItem `json:"items,omitempty"`
 }
 
 type Feeds struct {
