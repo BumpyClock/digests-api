@@ -116,6 +116,10 @@ func main() {
 
 	log.Info("Opening cache connection...")
 	cache, cacheErr = digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
+	if cacheErr != nil {
+		log.Fatalf("Failed to open cache connection: %v", cacheErr)
+	}
+
 	cachesize, cacheerr := cache.Count()
 	if cacheerr == nil {
 		log.Infof("Cache has %d items", cachesize)
