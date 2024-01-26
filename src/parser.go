@@ -201,10 +201,26 @@ func processURL(url string) FeedResponse {
 			}).Info("[Cache Hit] Cache is fresh")
 		}
 		return cachedFeed
-	} else {
+	} else if err != nil || cachedFeed.SiteTitle == "" {
 		log.WithFields(logrus.Fields{
 			"url": url,
-		}).Info("[Cache Miss] Cache miss")
+		}).Info("[Cache Miss] Cache miss or empty feed title")
+
+		response, err := fetchAndCacheFeed(url, cacheKey)
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"url":   url,
+				"error": err,
+			}).Error("Failed to fetch and cache feed")
+			return FeedResponse{
+				FeedUrl: url,
+				GUID:    cacheKey,
+				Status:  "error",
+				Error:   err,
+			}
+		}
+
+		return response
 	}
 
 	response, err := fetchAndCacheFeed(url, cacheKey)
