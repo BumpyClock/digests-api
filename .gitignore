@@ -1,2 +1,3 @@
 src/__debug_*.*
 src/__debug_bin*
+src/app.log

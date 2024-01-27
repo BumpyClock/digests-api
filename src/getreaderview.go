@@ -67,7 +67,7 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 	json.NewEncoder(w).Encode(results)
 }
 

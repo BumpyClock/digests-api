@@ -403,7 +403,7 @@ func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseIte
 }
 
 func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 	enc := json.NewEncoder(w)
 
 	feeds := Feeds{Feeds: responses}

@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"flag"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/rs/cors"
 	"github.com/sirupsen/logrus"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var limiter = rate.NewLimiter(1, 3) // Allow 1 request per second with a burst of 3 requests
@@ -102,6 +104,21 @@ func CORSMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+
+	log.SetOutput(&lumberjack.Logger{
+		Filename:   "app.log",
+		MaxSize:    500, // megabytes
+		MaxBackups: 3,
+		MaxAge:     28,   //days
+		Compress:   true, // disabled by default
+	})
+
+	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+
+	log.SetOutput(logFile)
 	port := flag.String("port", "8000", "port to run the application on")
 	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
 	redis := flag.String("redis", "localhost:6379", "redis address")
@@ -150,7 +167,7 @@ func main() {
 	log.Infof("Redis address is %v", redis_address)
 	log.Infof("Number of workers is %v", numWorkers)
 
-	err := http.ListenAndServe(":"+*port, handlerChain)
+	err = http.ListenAndServe(":"+*port, handlerChain)
 	if err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
