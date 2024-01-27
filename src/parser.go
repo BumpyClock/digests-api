@@ -118,10 +118,10 @@ func processURLs(urls []string) []FeedResponse {
 }
 
 func isCacheStale(lastRefreshed string) bool {
-	layout := "2006-01-02T15:04:05Z" // updated time format
+	layout := "2006-01-02T15:04:05Z07:00" // updated time format
 	parsedTime, err := time.Parse(layout, lastRefreshed)
 	if err != nil {
-		log.Printf("Failed to parse LastRefreshed: %v", err)
+		log.Infof("Failed to parse LastRefreshed: %v", err)
 		return false
 	}
 
