@@ -16,7 +16,6 @@ import (
 
 	"github.com/rs/cors"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var limiter = rate.NewLimiter(1, 3) // Allow 1 request per second with a burst of 3 requests
@@ -105,15 +104,15 @@ func CORSMiddleware(next http.Handler) http.Handler {
 
 func main() {
 
-	log.SetOutput(&lumberjack.Logger{
-		Filename:   "app.log",
-		MaxSize:    500, // megabytes
-		MaxBackups: 3,
-		MaxAge:     28,   //days
-		Compress:   true, // disabled by default
-	})
+	// log.SetOutput(&lumberjack.Logger{
+	// 	Filename:   "app.log",
+	// 	MaxSize:    500, // megabytes
+	// 	MaxBackups: 3,
+	// 	MaxAge:     28,   //days
+	// 	Compress:   true, // disabled by default
+	// })
 
-	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logFile, err := os.OpenFile("logs/app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		logrus.Fatal(err)
 	}

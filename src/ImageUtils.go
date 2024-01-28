@@ -14,8 +14,8 @@ import (
 	"github.com/disintegration/imaging"
 	"golang.org/x/net/html"
 
-	"github.com/EdlinOrg/prominentcolor"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/cenkalti/dominantcolor"
 	"github.com/mmcdole/gofeed"
 )
 
@@ -134,10 +134,57 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 // 	return "", nil
 // }
 
-func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
+// func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 
-	if url == "" {
-		return 128, 128, 128 // RGB values for gray
+// 	if len(url) == 0 {
+// 		return 128, 128, 128
+// 	}
+
+// 	if url == "" {
+// 		return 128, 128, 128 // RGB values for gray
+// 	}
+
+// 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+// 	if err != nil {
+// 		return 128, 128, 128
+// 	}
+
+// 	resp, err := httpClient.Do(req)
+// 	if err != nil {
+// 		return 128, 128, 128
+// 	}
+// 	defer resp.Body.Close()
+
+// 	img, _, err := image.Decode(resp.Body)
+// 	if err != nil {
+// 		return 128, 128, 128
+// 	}
+
+// 	resizedImage := imaging.Resize(img, 100, 0, imaging.Lanczos)
+
+// 	// Convert image.Image to *image.NRGBA
+// 	bounds := resizedImage.Bounds()
+// 	imgNRGBA := image.NewNRGBA(bounds)
+// 	draw.Draw(imgNRGBA, bounds, resizedImage, bounds.Min, draw.Src)
+
+// 	if imgNRGBA == nil || imgNRGBA.Bounds().Empty() {
+// 		return 128, 128, 128
+// 	}
+
+// 	// Get the most prominent color
+// 	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
+// 	if err != nil || len(colors) == 0 {
+// 		return 128, 128, 128
+// 	}
+
+// 	// Return the RGB components of the most prominent color
+// 	return uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)
+// }
+
+func extractColorFromThumbnail_dominantColor(url string) (r, g, b uint8) {
+
+	if len(url) == 0 {
+		return 128, 128, 128
 	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
@@ -163,14 +210,15 @@ func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 	imgNRGBA := image.NewNRGBA(bounds)
 	draw.Draw(imgNRGBA, bounds, resizedImage, bounds.Min, draw.Src)
 
-	// Get the most prominent color
-	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
-	if err != nil || len(colors) == 0 {
+	if imgNRGBA == nil || imgNRGBA.Bounds().Empty() {
 		return 128, 128, 128
 	}
 
-	// Return the RGB components of the most prominent color
-	return uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)
+	// Get the most dominant color
+	color := dominantcolor.Find(imgNRGBA)
+
+	// Return the RGB components of the most dominant color
+	return color.R, color.G, color.B
 }
 
 // func extractColorFromThumbnail_colorThief(url string) (r, g, b uint8) {
