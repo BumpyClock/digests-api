@@ -1,20 +1,21 @@
 package main
 
 import (
-	"compress/gzip"
 	"flag"
 	"net/http"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	digestsCache "digests-app-api/cache"
 
-	"github.com/rs/cors"
+	"github.com/gin-contrib/cors"
+	"github.com/gin-contrib/gzip"
 	"github.com/sirupsen/logrus"
 )
 
@@ -28,61 +29,16 @@ var refresh_timer = 15
 var redis_address = "localhost:6379"
 var numWorkers = runtime.NumCPU()
 
-func GzipMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		wrw := gzipResponseWriter{ResponseWriter: w}
-		wrw.Header().Set("Content-Encoding", "gzip")
-		defer wrw.Flush()
-
-		next.ServeHTTP(&wrw, r)
-	})
-}
-
-type gzipResponseWriter struct {
-	http.ResponseWriter
-	wroteHeader bool
-	writer      *gzip.Writer
-}
-
-func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	if !w.wroteHeader {
-		w.Header().Del("Content-Length")
-		w.writer = gzip.NewWriter(w.ResponseWriter)
-		w.wroteHeader = true
-	}
-	return w.writer.Write(b)
-}
-
-func (w *gzipResponseWriter) WriteHeader(status int) {
-	w.ResponseWriter.WriteHeader(status)
-	if w.wroteHeader && w.writer != nil {
-		w.writer.Close()
-	}
-}
-
-func (w *gzipResponseWriter) Flush() {
-	if w.wroteHeader {
-		w.writer.Flush()
-	}
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-func RateLimitMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func RateLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if !limiter.Allow() {
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			c.JSON(http.StatusTooManyRequests, gin.H{"message": "Too Many Requests"})
+			c.Abort()
 			return
 		}
 
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }
 
 func CORSMiddleware(next http.Handler) http.Handler {
@@ -104,13 +60,13 @@ func CORSMiddleware(next http.Handler) http.Handler {
 
 func main() {
 
-	// log.SetOutput(&lumberjack.Logger{
-	// 	Filename:   "app.log",
-	// 	MaxSize:    500, // megabytes
-	// 	MaxBackups: 3,
-	// 	MaxAge:     28,   //days
-	// 	Compress:   true, // disabled by default
-	// })
+	log.SetOutput(&lumberjack.Logger{
+		Filename:   "app.log",
+		MaxSize:    500, // megabytes
+		MaxBackups: 3,
+		MaxAge:     28,   //days
+		Compress:   true, // disabled by default
+	})
 
 	logFile, err := os.OpenFile("logs/app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
@@ -122,13 +78,24 @@ func main() {
 	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
 	redis := flag.String("redis", "localhost:6379", "redis address")
 	flag.Parse()
-	mux := http.NewServeMux()
-	InitializeRoutes(mux) // Assuming you've defined this to set up routes
+
+	router := gin.Default()
+	config := cors.DefaultConfig()
+	config.AllowAllOrigins = true
+	config.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+	config.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type"}
+
+	router.Use(cors.New(config)) // Create a new Gin engine
 
 	// Wrap the mux with the middleware
-	handlerChain := cors.Default().Handler(mux)      // Apply CORS first
-	handlerChain = RateLimitMiddleware(handlerChain) // Apply rate limiting next
-	handlerChain = GzipMiddleware(handlerChain)      // Apply Gzip compression last
+	router.Use(RateLimitMiddleware())
+	if err != nil {
+		log.Fatalf("Failed to create gzip handler: %v", err)
+	}
+	router.Use(gzip.Gzip(gzip.DefaultCompression))
+
+	InitializeRoutes(router) // Assuming you've defined this to set up routes
+
 	redis_address = *redis
 
 	log.Info("Opening cache connection...")
@@ -166,7 +133,7 @@ func main() {
 	log.Infof("Redis address is %v", redis_address)
 	log.Infof("Number of workers is %v", numWorkers)
 
-	err = http.ListenAndServe(":"+*port, handlerChain)
+	err = router.Run(":" + *port) // Start the server
 	if err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}

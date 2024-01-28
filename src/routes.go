@@ -2,29 +2,31 @@ package main
 
 import (
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
-func errorHandlingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func errorHandlingMiddleware(next gin.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		defer func() {
 			if err := recover(); err != nil {
 				log.Printf("An error occurred: %v", err)
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal Server Error"})
 			}
 		}()
-		next.ServeHTTP(w, r)
-	})
+		next(c)
+	}
 }
 
 // InitializeRoutes sets up all the routes for the application
-func InitializeRoutes(mux *http.ServeMux) {
+func InitializeRoutes(router *gin.Engine) {
 	// Apply the errorHandlingMiddleware to the validateURLsHandler
-	mux.Handle("/validate", errorHandlingMiddleware(http.HandlerFunc(validateURLsHandler)))
+	router.POST("/validate", errorHandlingMiddleware(validateURLsHandler))
 
 	// Apply the errorHandlingMiddleware to the parseHandler
-	mux.Handle("/parse", errorHandlingMiddleware(http.HandlerFunc(parseHandler)))
+	router.POST("/parse", errorHandlingMiddleware(parseHandler))
 
-	mux.Handle("/discover", errorHandlingMiddleware(http.HandlerFunc(discoverHandler)))
+	router.POST("/discover", errorHandlingMiddleware(discoverHandler))
 
-	mux.Handle("/getreaderview", errorHandlingMiddleware(http.HandlerFunc(getReaderViewHandler)))
+	router.POST("/getreaderview", errorHandlingMiddleware(getReaderViewHandler))
 }

@@ -1,7 +1,8 @@
 package main
 
 import (
-	"encoding/json"
+	"github.com/gin-gonic/gin"
+
 	"net/http"
 	"sync"
 	"time"
@@ -32,12 +33,11 @@ func getReaderViewResult(url string) ReaderViewResult {
 	}
 }
 
-func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
+func getReaderViewHandler(c *gin.Context) {
 	var urls Urls
-	err := json.NewDecoder(r.Body).Decode(&urls)
-	if err != nil {
+	if err := c.BindJSON(&urls); err != nil {
 		log.Printf("Error decoding request body: %v", err)
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bad Request"})
 		return
 	}
 
@@ -67,8 +67,7 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	json.NewEncoder(w).Encode(results)
+	c.JSON(http.StatusOK, results)
 }
 
 func getReaderView(url string) (readability.Article, error) {

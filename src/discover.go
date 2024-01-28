@@ -1,7 +1,8 @@
 package main
 
 import (
-	"encoding/json"
+	"github.com/gin-gonic/gin"
+
 	"errors"
 	"net/http"
 	"net/url"
@@ -23,12 +24,11 @@ var (
 	}
 )
 
-func discoverHandler(w http.ResponseWriter, r *http.Request) {
+func discoverHandler(c *gin.Context) {
 	var urls Urls
-	err := json.NewDecoder(r.Body).Decode(&urls)
-	if err != nil {
+	if err := c.BindJSON(&urls); err != nil {
 		log.Printf("Error decoding request body: %v", err)
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bad Request"})
 		return
 	}
 
@@ -56,8 +56,7 @@ func discoverHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string][]FeedResult{"feeds": results})
+	c.JSON(http.StatusOK, gin.H{"feeds": results})
 }
 
 type FeedResult struct {

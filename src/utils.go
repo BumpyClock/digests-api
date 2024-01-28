@@ -3,22 +3,17 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"sync"
+
+	"github.com/gin-gonic/gin"
 )
 
 // validateURLsHandler handles the /validate endpoint
-func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func validateURLsHandler(c *gin.Context) {
 	var req URLValidationRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -45,11 +40,7 @@ func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 
 	wg.Wait()
 
-	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(statuses)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	c.JSON(http.StatusOK, statuses)
 }
 
 // URLValidationRequest represents the request format for URL validation

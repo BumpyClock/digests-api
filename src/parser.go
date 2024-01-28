@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/gin-gonic/gin"
 	readability "github.com/go-shiori/go-readability"
 	"github.com/jinzhu/copier"
 	"github.com/mmcdole/gofeed"
@@ -73,21 +74,16 @@ func getBaseDomain(url string) string {
 }
 
 // parseHandler processes the POST request to parse specified feed URLs and return detailed feed information.
-func parseHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	req, err := decodeRequest(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+func parseHandler(c *gin.Context) {
+	req := new(ParseRequest) // Assuming Request is the type of your request
+	if err := c.BindJSON(req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	responses := processURLs(req.URLs)
 
-	sendResponse(w, responses)
+	c.JSON(http.StatusOK, responses)
 }
 
 func decodeRequest(r *http.Request) (ParseRequest, error) {
