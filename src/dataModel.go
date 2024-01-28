@@ -86,6 +86,7 @@ const redis_password = ""
 const redis_db = 0
 const feed_prefix = "feed"
 const readerView_prefix = "readerViewContent"
+const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 
 // const redis_feedsItems_key = "feedsItems"
 // const redis_feedDetails_key = "feedDetails"

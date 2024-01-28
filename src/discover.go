@@ -63,7 +63,7 @@ type FeedResult struct {
 	URL      string `json:"url"`
 	Status   string `json:"status"`
 	Error    string `json:"error,omitempty"`
-	FeedLink string `json:"feedLink"`
+	FeedLink string `json:"feedLink,omitempty"`
 }
 
 func discoverRssFeedUrl(urlStr string) (string, error) {

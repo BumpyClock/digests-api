@@ -57,6 +57,12 @@ func CORSMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+func UserAgentMiddleware(userAgent string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Header.Set("User-Agent", userAgent)
+		c.Next()
+	}
+}
 
 func main() {
 
@@ -78,9 +84,9 @@ func main() {
 	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
 	redis := flag.String("redis", "localhost:6379", "redis address")
 	flag.Parse()
-
 	router := gin.Default()
 	config := cors.DefaultConfig()
+	router.Use(UserAgentMiddleware(userAgent))
 	config.AllowAllOrigins = true
 	config.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 	config.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type"}

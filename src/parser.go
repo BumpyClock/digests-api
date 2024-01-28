@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -83,13 +81,7 @@ func parseHandler(c *gin.Context) {
 
 	responses := processURLs(req.URLs)
 
-	c.JSON(http.StatusOK, responses)
-}
-
-func decodeRequest(r *http.Request) (ParseRequest, error) {
-	var req ParseRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	return req, err
+	c.JSON(http.StatusOK, gin.H{"feeds": responses})
 }
 
 func processURLs(urls []string) []FeedResponse {
@@ -396,17 +388,6 @@ func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseIte
 		feedItems = append(feedItems, itemResponse)
 	}
 	return feedItems
-}
-
-func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	enc := json.NewEncoder(w)
-
-	feeds := Feeds{Feeds: responses}
-
-	if err := enc.Encode(feeds); err != nil {
-		log.Printf("Failed to encode response: %v", err)
-	}
 }
 
 // Feed refresh logic
