@@ -19,7 +19,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var limiter = rate.NewLimiter(1, 3) // Allow 1 request per second with a burst of 3 requests
+var limiter = rate.NewLimiter(3, 6) // Allow 1 request per second with a burst of 3 requests
 var cache *digestsCache.RedisCache
 var cacheErr error
 var log = logrus.New()
