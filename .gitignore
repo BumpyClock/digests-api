@@ -1,2 +1,4 @@
 src/__debug_*.*
 src/__debug_bin*
+build/digests-api
+build/*.*
