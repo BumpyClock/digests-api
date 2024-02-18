@@ -3,5 +3,4 @@ src/__debug_bin*
 src/app.log
 src/build/macos/app.log
 src/build/macos/digests-api
-src/build/*
 src/logs/app.log
