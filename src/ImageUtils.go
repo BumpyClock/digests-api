@@ -78,7 +78,7 @@ func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 }
 
 func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) {
-	resp, err := http.Get(pageURL)
+	resp, err := httpClient.Get(pageURL)
 	if err != nil {
 		return "", fmt.Errorf("error fetching page: %w", err)
 	}
