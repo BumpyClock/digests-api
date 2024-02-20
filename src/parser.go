@@ -85,15 +85,19 @@ func parseHandler(c *gin.Context) {
 }
 
 func processURLs(urls []string) []FeedResponse {
+	sem := make(chan bool, numCores)
+
 	responses := make(chan FeedResponse, len(urls))
 	var wg sync.WaitGroup
 
 	for _, url := range urls {
 		wg.Add(1)
+		sem <- true // Will block if there is no empty slot.
 		go func(url string) {
 			defer wg.Done()
 			response := processURL(url)
 			responses <- response
+			<-sem // Release the slot.
 		}(url)
 	}
 
@@ -229,16 +233,19 @@ func processURL(url string) FeedResponse {
 }
 
 func processFeedItems(items []*gofeed.Item) []FeedResponseItem {
+	sem := make(chan bool, numCores)
 
 	itemResponses := make(chan FeedResponseItem, len(items))
 	var itemWg sync.WaitGroup
 
 	for _, item := range items {
 		itemWg.Add(1)
+		sem <- true // Will block if there is no empty slot.
 		go func(item *gofeed.Item) {
 			defer itemWg.Done()
 			itemResponse := processFeedItem(item)
 			itemResponses <- itemResponse
+			<-sem // Release the slot.
 		}(item)
 	}
 

@@ -41,12 +41,16 @@ func getReaderViewHandler(c *gin.Context) {
 		return
 	}
 
+	sem := make(chan bool, numCores)
+
 	var wg sync.WaitGroup
 	results := make([]ReaderViewResult, len(urls.Urls))
 	for i, url := range urls.Urls {
 		wg.Add(1)
+		sem <- true // Will block if there is no empty slot.
 		go func(i int, url string) {
 			defer wg.Done()
+			defer func() { <-sem }() // Release the slot.
 			cacheKey := createHash(url)
 			var result ReaderViewResult
 			if err := cache.Get(readerView_prefix, cacheKey, &result); err != nil {

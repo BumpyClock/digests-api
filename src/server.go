@@ -27,7 +27,7 @@ var urlList []string
 var urlListMutex = &sync.Mutex{}
 var refresh_timer = 15
 var redis_address = "localhost:6379"
-var numWorkers = runtime.NumCPU()
+var numCores = runtime.NumCPU()
 
 func RateLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -137,7 +137,7 @@ func main() {
 	log.Infof("Feed freshness timer is %v minutes", refresh_timer)
 	log.Infof("Rate limit is %v requests per second", limiter.Limit())
 	log.Infof("Redis address is %v", redis_address)
-	log.Infof("Number of workers is %v", numWorkers)
+	log.Infof("Number of workers is %v", numCores)
 
 	err = router.Run(":" + *port) // Start the server
 	if err != nil {

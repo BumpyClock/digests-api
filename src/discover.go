@@ -1,6 +1,8 @@
 package main
 
 import (
+	"runtime"
+
 	"github.com/gin-gonic/gin"
 
 	"errors"
@@ -32,12 +34,17 @@ func discoverHandler(c *gin.Context) {
 		return
 	}
 
+	numCores := runtime.NumCPU()
+	sem := make(chan bool, numCores)
+
 	var wg sync.WaitGroup
 	results := make([]FeedResult, len(urls.Urls))
 	for i, url := range urls.Urls {
 		wg.Add(1)
+		sem <- true // Will block if there is no empty slot.
 		go func(i int, url string) {
 			defer wg.Done()
+			defer func() { <-sem }() // Release the slot.
 			feedLink, err := discoverRssFeedUrl(url)
 			result := feedResultPool.Get().(*FeedResult)
 			defer feedResultPool.Put(result)
