@@ -1,6 +1,6 @@
 module digests-app-api
 
-go 1.21.1
+go 1.22
 
 require (
 	github.com/EdlinOrg/prominentcolor v1.0.0
