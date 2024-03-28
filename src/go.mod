@@ -20,6 +20,7 @@ require (
 require (
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/davidbyttow/govips/v2 v2.14.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
@@ -27,6 +28,7 @@ require (
 	github.com/grafana/pyroscope-go v1.1.1 // indirect
 	github.com/grafana/pyroscope-go/godeltaprof v0.1.6 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/kettek/apng v0.0.0-20220823221153-ff692776a607 // indirect
 	github.com/klauspost/compress v1.17.3 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mmcdole/goxpp v1.1.0 // indirect
@@ -34,6 +36,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/oliamb/cutter v0.2.2 // indirect
+	github.com/pixiv/go-libjpeg v0.0.0-20190822045933-3da21a74767d // indirect
 	golang.org/x/image v0.15.0 // indirect
 	golang.org/x/sys v0.16.0 // indirect
 	golang.org/x/text v0.14.0 // indirect

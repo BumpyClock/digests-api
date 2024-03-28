@@ -4,7 +4,6 @@ import (
 	"compress/gzip"
 	"flag"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"strings"
