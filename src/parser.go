@@ -298,6 +298,8 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 
 	thumbnailColor := RGBColor{128, 128, 128}
 	if thumbnail != "" {
+		//log the thumbnail
+		log.Printf("Thumbnail: %s", thumbnail)
 		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
 		thumbnailColor = RGBColor{r, g, b}
 	}

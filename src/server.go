@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"flag"
 	"net/http"
+	_ "net/http/pprof"
 	"runtime"
 	"strings"
 	"sync"
@@ -102,6 +103,12 @@ func CORSMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+
+	// Start pprof profiling
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	port := flag.String("port", "8000", "port to run the application on")
 	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
 	redis := flag.String("redis", "localhost:6379", "redis address")

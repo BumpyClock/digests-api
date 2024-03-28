@@ -135,6 +135,12 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 // }
 
 func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic while processing URL %s: %v", url, r)
+			r, g, b = 128, 128, 128
+		}
+	}()
 
 	if url == "" {
 		return 128, 128, 128 // RGB values for gray
@@ -158,19 +164,24 @@ func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 
 	resizedImage := imaging.Resize(img, 100, 0, imaging.Lanczos)
 
-	// Convert image.Image to *image.NRGBA
 	bounds := resizedImage.Bounds()
 	imgNRGBA := image.NewNRGBA(bounds)
 	draw.Draw(imgNRGBA, bounds, resizedImage, bounds.Min, draw.Src)
 
-	// Get the most prominent color
+	if imgNRGBA == nil {
+		log.Printf("imgNRGBA is nil for URL %s", url)
+	}
+
 	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
 	if err != nil || len(colors) == 0 {
 		return 128, 128, 128
 	}
 
-	// Return the RGB components of the most prominent color
-	return uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)
+	if len(colors) > 0 {
+		return uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)
+	}
+
+	return 128, 128, 128
 }
 
 // func extractColorFromThumbnail_colorThief(url string) (r, g, b uint8) {
