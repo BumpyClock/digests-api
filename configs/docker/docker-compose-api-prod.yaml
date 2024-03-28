@@ -1,0 +1,44 @@
+version: '3'
+services:
+  swag:
+    image: linuxserver/swag
+    container_name: swag
+    network_mode: bridge
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - PUID=1000  # Replace with your user ID
+      - PGID=1000  # Replace with your group ID
+      - TZ=AMERICA/Los_Angeles  # Replace with your timezone
+      - URL=bumpyclock.com  # Replace with your domain
+      - SUBDOMAINS=rss  # Replace with your subdomain
+      - VALIDATION=dns
+      - EMAIL=adityaksharma@gmail.com
+      - DNSPLUGIN=cloudflare
+    volumes:
+      - ./config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+
+    # Removed the ports section to not expose directly
+
+  redis:
+    image: redis/redis-stack
+    container_name: redis
+    network_mode: bridge
+    ports:
+      - "6379:6379"
+      - "8001:8001"
+    environment:
+      - REDIS_ARGS=--save 600 50 --appendonly yes
+      - RIAUTHPROMPT=1
+
+    volumes:
+      - redis_data:/data
+    # Removed the ports section to not expose directly unless necessary
+
+volumes:
+  redis_data:
+  config:  # Volume for SWAG configuration

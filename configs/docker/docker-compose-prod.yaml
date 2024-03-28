@@ -1,0 +1,71 @@
+version: '3'
+services:
+  swag:
+    image: linuxserver/swag
+    container_name: swag
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - PUID=1000  # Replace with your user ID
+      - PGID=1000  # Replace with your group ID
+      - TZ=AMERICA/Los_Angeles  # Replace with your timezone
+      - URL=bumpyclock.com  # Replace with your domain
+      - SUBDOMAINS=rss  # Replace with your subdomain
+      - VALIDATION=dns
+      - EMAIL=adityaksharma@gmail.com
+      - DNSPLUGIN=cloudflare
+    volumes:
+      - ./config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+
+
+#  rss-utils-webservice:
+#    image: bumpyclock/rss-utils
+#    container_name: rss-utils-webservice
+#    ports:
+#      - "3000:3000"
+#    environment:
+#      - REDIS_HOST=redis
+#      - REDIS_PORT=6379
+#      - FQDN=app.example.com
+#      - REFRESHTIMER=600000
+#    depends_on:
+#      - redis
+    # Removed the ports section to not expose directly
+
+
+
+
+  digests-api-webservice:
+    image: bumpyclock/digests-api
+    container_name: digests-api-webservice
+    environment:
+      - GIN_MODE=release
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  redis:
+    image: redis/redis-stack
+    container_name: redis
+    ports:
+      - "6379:6379"
+      - "8001:8001"
+    environment:
+      - REDIS_ARGS=--save 600 50 --appendonly yes
+      - RIAUTHPROMPT=1
+
+    volumes:
+      - redis_data:/data
+    # Removed the ports section to not expose directly unless necessary
+
+volumes:
+  redis_data:
+  config:  # Volume for SWAG configuration
