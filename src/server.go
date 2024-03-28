@@ -5,6 +5,7 @@ import (
 	"flag"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	digestsCache "digests-app-api/cache"
 
+	"github.com/grafana/pyroscope-go"
 	"github.com/rs/cors"
 	"github.com/sirupsen/logrus"
 )
@@ -104,10 +106,34 @@ func CORSMiddleware(next http.Handler) http.Handler {
 
 func main() {
 
-	// Start pprof profiling
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
+	pyroscope.Start(pyroscope.Config{
+		ApplicationName: "Digests-Api",
+
+		// replace this with the address of pyroscope server
+		ServerAddress: "http://localhost:4040",
+
+		// you can disable logging by setting this to nil
+		Logger: pyroscope.StandardLogger,
+
+		// you can provide static tags via a map:
+		Tags: map[string]string{"hostname": os.Getenv("HOSTNAME")},
+
+		ProfileTypes: []pyroscope.ProfileType{
+			// these profile types are enabled by default:
+			pyroscope.ProfileCPU,
+			pyroscope.ProfileAllocObjects,
+			pyroscope.ProfileAllocSpace,
+			pyroscope.ProfileInuseObjects,
+			pyroscope.ProfileInuseSpace,
+
+			// these profile types are optional:
+			pyroscope.ProfileGoroutines,
+			pyroscope.ProfileMutexCount,
+			pyroscope.ProfileMutexDuration,
+			pyroscope.ProfileBlockCount,
+			pyroscope.ProfileBlockDuration,
+		},
+	})
 
 	port := flag.String("port", "8000", "port to run the application on")
 	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")

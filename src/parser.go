@@ -17,7 +17,10 @@ import (
 
 	"golang.org/x/net/html"
 
+	"context"
+
 	readability "github.com/go-shiori/go-readability"
+	"github.com/grafana/pyroscope-go"
 	"github.com/jinzhu/copier"
 	"github.com/mmcdole/gofeed"
 	"github.com/sirupsen/logrus"
@@ -298,8 +301,6 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 
 	thumbnailColor := RGBColor{128, 128, 128}
 	if thumbnail != "" {
-		//log the thumbnail
-		log.Printf("Thumbnail: %s", thumbnail)
 		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
 		thumbnailColor = RGBColor{r, g, b}
 	}
@@ -331,23 +332,26 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 }
 
 func getFavicon(feed *gofeed.Feed) string {
-	favicon := ""
-	if feed.Image != nil {
-		favicon = feed.Image.URL
-	} else {
-		baseDomain := getBaseDomain(feed.Link)
+	var favicon string
 
-		article, err := readability.FromURL(baseDomain, 10*time.Second)
-		if err == nil {
-			favicon = article.Favicon
+	pyroscope.TagWrapper(context.Background(), pyroscope.Labels("function", "getFavicon"), func(ctx context.Context) {
+		if feed.Image != nil {
+			favicon = feed.Image.URL
 		} else {
-			log.Printf(`[Favicon Discovery] Error getting favicon from readability: %s`, err)
-		}
-	}
+			baseDomain := getBaseDomain(feed.Link)
 
-	if favicon == "" {
-		favicon = DiscoverFavicon(feed.Link)
-	}
+			article, err := readability.FromURL(baseDomain, 10*time.Second)
+			if err == nil {
+				favicon = article.Favicon
+			} else {
+				log.Printf(`[Favicon Discovery] Error getting favicon from readability: %s`, err)
+			}
+		}
+
+		if favicon == "" {
+			favicon = DiscoverFavicon(feed.Link)
+		}
+	})
 
 	return favicon
 }
