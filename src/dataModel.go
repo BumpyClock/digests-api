@@ -84,8 +84,8 @@ type ReaderViewResult struct {
 
 const redis_password = ""
 const redis_db = 0
-const feed_prefix = "feed:"
-const readerView_prefix = "readerViewContent:"
+const feed_prefix = "feed"
+const readerView_prefix = "readerViewContent"
 
 // const redis_feedsItems_key = "feedsItems"
 // const redis_feedDetails_key = "feedDetails"
