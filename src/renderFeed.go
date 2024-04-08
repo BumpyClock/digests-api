@@ -32,7 +32,7 @@ func getFeedHandler(w http.ResponseWriter, r *http.Request) {
 			item.FeedTitle = feed.FeedTitle
 			item.Favicon = feed.Favicon
 			time, err := parseTime(item.Published)
-			if err != nil {
+			if err == nil {
 				item.Published = time.Format("02 Jan 06 3:04 PM")
 			}
 			allItems = append(allItems, item)

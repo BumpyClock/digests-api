@@ -78,8 +78,14 @@ func parseTime(timeStr string) (time.Time, error) {
 		return t, nil
 	}
 
+	// If that fails, try parsing with "02 Jan 06 3:04 PM" format
+	t, err = time.Parse("02 Jan 06 3:04 PM", timeStr)
+	if err == nil {
+		return t, nil
+	}
+
 	log.Printf("Failed to parse time: %v", err)
 
-	// If that also fails, return the error
+	// If all attempts fail, return the error
 	return time.Time{}, fmt.Errorf("Failed to parse time: %v", err)
 }
