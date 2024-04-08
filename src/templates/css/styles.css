@@ -236,11 +236,14 @@ select:focus {
 
 
 #feedContainer {
+  max-width:2400px;
   margin: auto;
 overflow: auto;
 padding: 24px;
 }
 .feed-container {
+ 
+  flex-wrap: wrap;
 column-gap: 24px;
 row-gap: 24px;
 margin: auto;
@@ -259,7 +262,7 @@ padding:64px;
 /* For tablet devices */
 @media (min-width: 601px) and (max-width: 900px) {
 .feed-container {
-   column-count: 2;
+   column-count: 3;
 }
 }
 
@@ -301,7 +304,7 @@ padding:64px;
     display: flex;
     flex-direction: column;
     height: auto;
-    max-width: 650px;
+    max-width: 450px;
     margin-bottom: 24px;
     break-inside: avoid;
     -webkit-backdrop-filter: var(--blur);
@@ -344,7 +347,7 @@ padding:64px;
     height: 100%;
     z-index: -2;
     filter: blur(60px) brightness(.9);
-    opacity: .35;
+    opacity: .55;
     transform: scale(1.4) rotate(180deg);
     transition:all .25s ease-in-out;
 
@@ -356,7 +359,7 @@ padding:64px;
     height: auto;
     filter: blur(60px) brightness(.9);
     z-index: -2;
-    opacity: .35;
+    opacity: .55;
     transform: scale(1.4) rotate(180deg);
     transition:all .25s ease-in-out;
   }

@@ -32,6 +32,7 @@ func getFeedHandler(w http.ResponseWriter, r *http.Request) {
 			item.FeedTitle = feed.FeedTitle
 			item.Favicon = feed.Favicon
 			time, err := parseTime(item.Published)
+			log.Info("Time for item: ", time, " Error: ", err)
 			if err == nil {
 				item.Published = time.Format("02 Jan 06 3:04 PM")
 			}
@@ -43,6 +44,11 @@ func getFeedHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Sort all items by published date
 	sortAllFeedItems(&allItems)
+
+	// Print allItems to the console
+	for _, item := range allItems {
+		log.Info(item.Published, " - ", item.Title, " - ", item.SiteTitle, " - ", item.FeedTitle, " - ", item.Favicon)
+	}
 
 	tmpl, err := loadTemplates()
 	if err != nil {
@@ -64,13 +70,28 @@ func getFeedHandler(w http.ResponseWriter, r *http.Request) {
 func sortAllFeedItems(items *[]FeedResponseItem) {
 	sort.Slice(*items, func(i, j int) bool {
 		timeI, errI := parseTime((*items)[i].Published)
+		timeJ, errJ := parseTime((*items)[j].Published)
+
+		// Convert times to local time zone
+		timeI = timeI.Local()
+		timeJ = timeJ.Local()
+
+		// If both times are unparsable, keep their original order
+		if errI != nil && errJ != nil {
+			return i < j
+		}
+
+		// If only timeI is unparsable, place it after timeJ
 		if errI != nil {
 			return false
 		}
-		timeJ, errJ := parseTime((*items)[j].Published)
+
+		// If only timeJ is unparsable, place it after timeI
 		if errJ != nil {
-			return true // Assume i < j if j's time fails to parse
+			return true
 		}
+
+		// If both times are parsable, compare them
 		return timeI.After(timeJ) // Descending order
 	})
 }

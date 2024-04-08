@@ -45,11 +45,17 @@
   <script src="https://unpkg.com/masonry-layout@4/dist/masonry.pkgd.min.js"></script>
   <script>
     window.onload = function() {
-        var elem = document.querySelector('.feed-ontainer');
+        var elem = document.querySelector('#feedContainer');
         var msnry = new Masonry( elem, {
             // options
+            fitWidth: true,
             itemSelector: '.card',
-            columnWidth: 36
+            columnWidth: '.card',
+            horizontalOrder: true,
+            stagger: 30,
+            gutter:36
+
+
         });
     };
     </script>

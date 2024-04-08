@@ -69,18 +69,21 @@ func parseTime(timeStr string) (time.Time, error) {
 	// Try parsing with RFC1123 format
 	t, err := time.Parse(time.RFC1123, timeStr)
 	if err == nil {
+		log.Info("Parsed time with RFC1123 format ", t)
 		return t, nil
 	}
 
 	// If that fails, try parsing with RFC3339 format
 	t, err = time.Parse(time.RFC3339, timeStr)
 	if err == nil {
+		log.Info("Parsed time with RFC3339 format ", t)
 		return t, nil
 	}
 
 	// If that fails, try parsing with "02 Jan 06 3:04 PM" format
 	t, err = time.Parse("02 Jan 06 3:04 PM", timeStr)
 	if err == nil {
+		log.Info("Parsed time with custom format ", t)
 		return t, nil
 	}
 
