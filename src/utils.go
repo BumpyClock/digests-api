@@ -4,8 +4,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // validateURLsHandler handles the /validate endpoint
@@ -61,4 +63,23 @@ type URLValidationRequest struct {
 type URLStatus struct {
 	URL    string `json:"url"`
 	Status string `json:"status"`
+}
+
+func parseTime(timeStr string) (time.Time, error) {
+	// Try parsing with RFC1123 format
+	t, err := time.Parse(time.RFC1123, timeStr)
+	if err == nil {
+		return t, nil
+	}
+
+	// If that fails, try parsing with RFC3339 format
+	t, err = time.Parse(time.RFC3339, timeStr)
+	if err == nil {
+		return t, nil
+	}
+
+	log.Printf("Failed to parse time: %v", err)
+
+	// If that also fails, return the error
+	return time.Time{}, fmt.Errorf("Failed to parse time: %v", err)
 }

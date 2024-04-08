@@ -42,6 +42,9 @@ type FeedResponseItem struct {
 	Enclosures      []*gofeed.Enclosure `json:"enclosures"`
 	Thumbnail       string              `json:"thumbnail"`
 	ThumbnailColor  RGBColor            `json:"thumbnailColor"`
+	SiteTitle       string              `json:"siteTitle,omitempty"`
+	FeedTitle       string              `json:"feedTitle,omitempty"`
+	Favicon         string              `json:"favicon,omitempty"`
 }
 
 // FeedResponse represents the structure for the overall feed, including metadata and items.
@@ -87,5 +90,4 @@ const redis_db = 0
 const feed_prefix = "feed"
 const readerView_prefix = "readerViewContent"
 
-// const redis_feedsItems_key = "feedsItems"
-// const redis_feedDetails_key = "feedDetails"
+// END CONSTANTS

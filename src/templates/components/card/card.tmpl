@@ -1,0 +1,29 @@
+{{define "card"}}
+<div class="card" hx-boost="true">
+    {{if .Thumbnail}}
+    <div class="image-container">
+        <img src="{{.Thumbnail}}" alt="Thumbnail image">
+    </div>
+
+    <div class="card-bg">
+        <img src="{{.Thumbnail}}" alt="Thumbnail image">
+        <div class="noise"></div>
+    </div>
+    {{end}}
+
+    <div class="text-content">
+        
+        <div class="website-info">
+            <img class="site-favicon" src="{{.Favicon}}" alt="Favicon">
+            <p class="site-name">{{.SiteTitle}}</p>
+        </div>
+        
+    <h3>{{.Title}}</h3>
+    <div class="date">
+        <p>{{.Published}}</p>
+    </div>
+    <p>{{if gt (len .Description) 150}}{{slice .Description 0 150}}...{{else}}{{.Description}}{{end}}</p>
+    <a href="{{.Link}}" target="_blank">Read more</a>
+    </div>
+</div>
+{{end}}

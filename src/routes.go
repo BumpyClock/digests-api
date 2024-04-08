@@ -31,4 +31,10 @@ func InitializeRoutes(mux *http.ServeMux) {
 	mux.Handle("/create-share", errorHandlingMiddleware(http.HandlerFunc(createShareHandler)))
 
 	mux.Handle("/get-share", errorHandlingMiddleware(http.HandlerFunc(shareHandler)))
+
+	mux.Handle("/", errorHandlingMiddleware(http.HandlerFunc(getFeedHandler)))
+
+	fileServer := http.FileServer(http.Dir("templates")) // Point to the directory with static files
+	mux.Handle("/static/", http.StripPrefix("/static", fileServer))
+
 }
