@@ -5,3 +5,4 @@ build/*.*
 build/macos/digests-api
 src/build/digests-api-linux-amd64
 src/build/*.*
+src/tmp*.*
