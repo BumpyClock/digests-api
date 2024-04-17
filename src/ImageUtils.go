@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/draw"
@@ -77,8 +78,35 @@ func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 	return ""
 }
 
+type jsonLinkResponse struct {
+	Images []string `json:"images"`
+}
+
 func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) {
-	resp, err := http.Get(pageURL)
+	// Prepare the API URL with the required parameters.
+	apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", pageURL)
+
+	// Send the GET request.
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		log.Printf(`[Thumbnail Discovery] Error sending GET request: %s`, err)
+	} else {
+		defer resp.Body.Close()
+
+		// Decode the response.
+		var response jsonLinkResponse
+		err = json.NewDecoder(resp.Body).Decode(&response)
+		if err != nil {
+			log.Printf(`[Thumbnail Discovery] Error decoding response: %s`, err)
+		} else if len(response.Images) > 0 {
+			// Get the thumbnail from the response.
+			log.Printf(`[Thumbnail Discovery] Found thumbnail for URL %s: %s`, pageURL, response.Images[0])
+			return response.Images[0], nil
+		}
+	}
+
+	// Fallback to previous method if no thumbnail is found from the API.
+	resp, err = http.Get(pageURL)
 	if err != nil {
 		return "", fmt.Errorf("error fetching page: %w", err)
 	}
@@ -89,6 +117,14 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 		return "", fmt.Errorf("error loading HTTP response body: %w", err)
 	}
 
+	// Look for Open Graph image meta tag
+	meta := doc.Find("meta[property='og:image']")
+	if meta.Length() > 0 {
+		content, _ := meta.Attr("content")
+		return content, nil
+	}
+
+	// Fallback to previous method if no Open Graph image meta tag is found
 	src, exists := doc.Find("article img, .content img").First().Attr("src")
 	if exists {
 		if !strings.HasPrefix(src, "http") {
@@ -102,37 +138,6 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 	}
 	return "", nil
 }
-
-// fetchImageFromSource fetches the given URL and attempts to find an image.
-// func fetchImageFromSource(pageURL string) (string, error) {
-// 	// Custom logic for specific domains can be added here
-// 	resp, err := http.Get(pageURL)
-// 	if err != nil {
-// 		return "", fmt.Errorf("error fetching page: %w", err)
-// 	}
-// 	defer resp.Body.Close()
-
-// 	// Use goquery to parse the HTML
-// 	doc, err := goquery.NewDocumentFromReader(resp.Body)
-// 	if err != nil {
-// 		return "", fmt.Errorf("error loading HTTP response body: %w", err)
-// 	}
-
-// 	// Attempt to find an image
-// 	src, exists := doc.Find("article img, .content img").First().Attr("src")
-// 	if exists {
-// 		// Handle relative URLs
-// 		if !strings.HasPrefix(src, "http") {
-// 			parsedURL, err := url.Parse(pageURL)
-// 			if err != nil {
-// 				return "", err
-// 			}
-// 			return parsedURL.Scheme + "://" + parsedURL.Host + src, nil
-// 		}
-// 		return src, nil
-// 	}
-// 	return "", nil
-// }
 
 func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 	defer func() {
@@ -184,34 +189,6 @@ func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 	return 128, 128, 128
 }
 
-// func extractColorFromThumbnail_colorThief(url string) (r, g, b uint8) {
-// 	if url == "" {
-// 		return 128, 128, 128 // RGB values for gray
-// 	}
-// 	resp, err := http.Get(url)
-// 	if err != nil {
-// 		return 0, 0, 0
-// 	}
-// 	defer resp.Body.Close()
-
-// 	img, _, err := image.Decode(resp.Body)
-// 	if err != nil {
-// 		return 0, 0, 0
-// 	}
-
-// 	// Use colorthief-go to get the dominant color as a color.Color
-// 	dominantColor, err := colorthief.GetColor(img)
-// 	if err != nil {
-// 		return 0, 0, 0
-// 	}
-
-// 	// Convert color.Color to color.RGBA
-// 	rgba := color.RGBAModel.Convert(dominantColor).(color.RGBA)
-
-// 	return rgba.R, rgba.G, rgba.B
-// }
-
-// DiscoverFavicon fetches the webpage at the given URL and attempts to find a favicon.
 func DiscoverFavicon(pageURL string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

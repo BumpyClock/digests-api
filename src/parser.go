@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 
 	_ "image/gif"
 	_ "image/jpeg"
@@ -17,7 +18,6 @@ import (
 
 	"golang.org/x/net/html"
 
-	readability "github.com/go-shiori/go-readability"
 	"github.com/jinzhu/copier"
 	"github.com/mmcdole/gofeed"
 	"github.com/sirupsen/logrus"
@@ -299,7 +299,7 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 	thumbnailColor := RGBColor{128, 128, 128}
 	if thumbnail != "" {
 		//log the thumbnail
-		log.Printf("Thumbnail: %s", thumbnail)
+		// log.Printf("Thumbnail: %s", thumbnail)
 		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
 		thumbnailColor = RGBColor{r, g, b}
 	}
@@ -330,19 +330,36 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 	}
 }
 
+type Response struct {
+	Favicon string `json:"favicon"`
+}
+
 func getFavicon(feed *gofeed.Feed) string {
 	favicon := ""
 	if feed.Image != nil {
 		favicon = feed.Image.URL
 	} else {
-		baseDomain := getBaseDomain(feed.Link)
+		// Prepare the API URL with the required parameters.
+		apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", feed.Link)
 
-		article, err := readability.FromURL(baseDomain, 10*time.Second)
-		if err == nil {
-			favicon = article.Favicon
-		} else {
-			log.Printf(`[Favicon Discovery] Error getting favicon from readability: %s`, err)
+		// Send the GET request.
+		resp, err := http.Get(apiURL)
+		if err != nil {
+			log.Printf(`[Favicon Discovery] Error sending GET request: %s`, err)
+			return ""
 		}
+		defer resp.Body.Close()
+
+		// Decode the response.
+		var response Response
+		err = json.NewDecoder(resp.Body).Decode(&response)
+		if err != nil {
+			log.Printf(`[Favicon Discovery] Error decoding response: %s`, err)
+			return ""
+		}
+
+		// Get the favicon from the response.
+		favicon = response.Favicon
 	}
 
 	if favicon == "" {
