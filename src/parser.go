@@ -145,8 +145,9 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 	}
 
 	feedItems := processFeedItems(feed.Items)
-	favicon := getFavicon(feed)
 	baseDomain := getBaseDomain(feed.Link)
+	favicon := getFavicon(feed)
+
 	addURLToList(url)
 
 	response := createFeedResponse(feed, url, baseDomain, favicon, feedItems)
@@ -286,12 +287,24 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 	}
 
 	// Extract thumbnail from article if not found
+	// if thumbnail == "" {
+	// 	cacheKey := createHash(item.Link)
+	// 	tempReaderViewResult := getReaderViewResult(item.Link)
+	// 	thumbnail = tempReaderViewResult.Image
+	// 	if err := cache.Set(readerView_prefix, cacheKey, tempReaderViewResult, 24*time.Hour); err != nil {
+	// 		log.Printf("Failed to cache feed details for %s: %v", item.Link, err)
+	// 	}
+
+	// }
+
 	if thumbnail == "" {
-		cacheKey := createHash(item.Link)
-		tempReaderViewResult := getReaderViewResult(item.Link)
-		thumbnail = tempReaderViewResult.Image
-		if err := cache.Set(readerView_prefix, cacheKey, tempReaderViewResult, 24*time.Hour); err != nil {
-			log.Printf("Failed to cache feed details for %s: %v", item.Link, err)
+		tempThumbnail, err := thumbnailFinder.fetchImageFromSource(item.Link)
+		if err != nil {
+			log.Printf("Error fetching image: %v", err)
+			thumbnail = ""
+
+		} else if tempThumbnail != "" {
+			thumbnail = tempThumbnail
 		}
 
 	}
@@ -339,8 +352,16 @@ func getFavicon(feed *gofeed.Feed) string {
 	if feed.Image != nil {
 		favicon = feed.Image.URL
 	} else {
+
+		parsedURL, err := URL.Parse(feed.Link)
+		if err != nil {
+			log.Printf(`[Favicon Discovery] Error parsing URL: %s`, err)
+			return ""
+		}
+		rootDomain := "https://" + parsedURL.Hostname()
+		log.Printf(`[Favicon Discovery] Root domain: %s`, rootDomain)
 		// Prepare the API URL with the required parameters.
-		apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", feed.Link)
+		apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", rootDomain)
 
 		// Send the GET request.
 		resp, err := http.Get(apiURL)
