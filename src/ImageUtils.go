@@ -100,7 +100,7 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 			log.Printf(`[Thumbnail Discovery] Error decoding response: %s`, err)
 		} else if len(response.Images) > 0 {
 			// Get the thumbnail from the response.
-			log.Printf(`[Thumbnail Discovery] Found thumbnail for URL %s: %s`, pageURL, response.Images[0])
+			// log.Printf(`[Thumbnail Discovery] Found thumbnail for URL %s: %s`, pageURL, response.Images[0])
 			return response.Images[0], nil
 		}
 	}

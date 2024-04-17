@@ -86,10 +86,15 @@ type JSONLinkResponseItem struct {
 	Images      []string `json:"images"`
 	Sitename    string   `json:"sitename"`
 	Favicon     string   `json:"favicon"`
-	Duration    string   `json:"duration"`
+	Duration    int      `json:"duration"`
 	Domain      string   `json:"domain"`
 	URL         string   `json:"url"`
 	Source      string   `json:"source"`
+}
+
+type JSONLinkErrorResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
 }
 
 // CONSTANTS

@@ -118,15 +118,15 @@ func processURLs(urls []string) []FeedResponse {
 }
 
 func isCacheStale(lastRefreshed string) bool {
-	layout := "2006-01-02T15:04:05Z" // updated time format
+	layout := time.RFC3339
 	parsedTime, err := time.Parse(layout, lastRefreshed)
 	if err != nil {
-		log.Printf("Failed to parse LastRefreshed: %v", err)
+		log.Printf("Failed to parse LastRefreshed: %v %v", err, lastRefreshed)
 		return false
 	}
 
 	if time.Since(parsedTime) > time.Duration(refresh_timer)*time.Minute {
-		log.Println("[Cache Stale] Cache is stale")
+		// log.Println("[Cache Stale] Cache is stale")
 		return true
 	} else {
 		return false
@@ -146,13 +146,14 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 
 	feedItems := processFeedItems(feed.Items)
 	baseDomain := getBaseDomain(feed.Link)
+	var favicon string
 	apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", baseDomain)
 
 	// Send the GET request.
 	resp, err := http.Get(apiURL)
 	if err != nil {
 		log.Printf(`[jsonLink] Error sending GET request: %s`, err)
-		return FeedResponse{}, err
+
 	}
 	defer resp.Body.Close()
 
@@ -160,13 +161,25 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 	var jsonLinkresponse JSONLinkResponseItem
 	err = json.NewDecoder(resp.Body).Decode(&jsonLinkresponse)
 	if err != nil {
+		// Try to decode the response into the error response struct.
+		var errorResponse JSONLinkErrorResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&errorResponse)
+		if decodeErr == nil && !errorResponse.Success && errorResponse.Error == "Too many request" {
+			// Handle the "Too many request" error.
+			log.Printf(`[jsonLink] Too many requests: %s`, errorResponse.Error)
+		}
+
 		log.Printf(`[jsonLink] Error decoding response: %s`, err)
-		return FeedResponse{}, err
+		favicon = getFavicon(feed)
+	}
+
+	if favicon == "" {
+		favicon = getFavicon(feed)
 	}
 
 	addURLToList(url)
 
-	response := createFeedResponse(feed, url, baseDomain, jsonLinkresponse.Favicon, jsonLinkresponse, feedItems)
+	response := createFeedResponse(feed, url, baseDomain, favicon, jsonLinkresponse, feedItems)
 
 	// Cache the new feed details and items
 	if err := cache.Set(feed_prefix, cacheKey, response, 24*time.Hour); err != nil {
@@ -401,10 +414,26 @@ func getFavicon(feed *gofeed.Feed) string {
 }
 
 func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, JSONLinkResponse JSONLinkResponseItem, feedItems []FeedResponseItem) FeedResponse {
+
+	var finalFavicon string
+	var finalSiteTitle string
+	if JSONLinkResponse.Favicon != "" {
+		finalFavicon = JSONLinkResponse.Favicon
+	} else {
+		finalFavicon = favicon
+	}
+
+	if JSONLinkResponse.Sitename != "" {
+		finalSiteTitle = JSONLinkResponse.Sitename
+	} else {
+		finalSiteTitle = feed.Title
+
+	}
+
 	return FeedResponse{
 		Status:        "ok",
 		GUID:          createHash(url),
-		SiteTitle:     JSONLinkResponse.Sitename,
+		SiteTitle:     finalSiteTitle,
 		FeedTitle:     feed.Title,
 		FeedUrl:       url,
 		Description:   feed.Description,
@@ -414,7 +443,7 @@ func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, JSON
 		Published:     feed.Published,
 		Author:        feed.Author,
 		Language:      feed.Language,
-		Favicon:       JSONLinkResponse.Favicon,
+		Favicon:       finalFavicon,
 		Categories:    strings.Join(feed.Categories, ", "),
 		Items:         &feedItems,
 	}
