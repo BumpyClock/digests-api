@@ -353,15 +353,9 @@ func getFavicon(feed *gofeed.Feed) string {
 		favicon = feed.Image.URL
 	} else {
 
-		parsedURL, err := URL.Parse(feed.Link)
-		if err != nil {
-			log.Printf(`[Favicon Discovery] Error parsing URL: %s`, err)
-			return ""
-		}
-		rootDomain := "https://" + parsedURL.Hostname()
-		log.Printf(`[Favicon Discovery] Root domain: %s`, rootDomain)
+		parsedURL := getBaseDomain(feed.Link)
 		// Prepare the API URL with the required parameters.
-		apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", rootDomain)
+		apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", parsedURL)
 
 		// Send the GET request.
 		resp, err := http.Get(apiURL)

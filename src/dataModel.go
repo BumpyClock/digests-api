@@ -80,6 +80,18 @@ type ReaderViewResult struct {
 	TextContent string `json:"textContent"`
 }
 
+type jsonLinkResponseItem struct {
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Images      []string `json:"images"`
+	Sitename    string   `json:"sitename"`
+	Favicon     string   `json:"favicon"`
+	Duration    string   `json:"duration"`
+	Domain      string   `json:"domain"`
+	URL         string   `json:"url"`
+	Source      string   `json:"source"`
+}
+
 // CONSTANTS
 
 const redis_password = ""
