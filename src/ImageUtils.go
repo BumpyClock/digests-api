@@ -78,7 +78,7 @@ func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 	return ""
 }
 
-type jsonLinkResponse struct {
+type jsonLinkResponseImage struct {
 	Images []string `json:"images"`
 }
 
@@ -94,7 +94,7 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 		defer resp.Body.Close()
 
 		// Decode the response.
-		var response jsonLinkResponse
+		var response jsonLinkResponseImage
 		err = json.NewDecoder(resp.Body).Decode(&response)
 		if err != nil {
 			log.Printf(`[Thumbnail Discovery] Error decoding response: %s`, err)

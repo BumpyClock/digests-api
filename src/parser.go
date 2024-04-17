@@ -146,11 +146,27 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 
 	feedItems := processFeedItems(feed.Items)
 	baseDomain := getBaseDomain(feed.Link)
-	favicon := getFavicon(feed)
+	apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", baseDomain)
+
+	// Send the GET request.
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		log.Printf(`[jsonLink] Error sending GET request: %s`, err)
+		return FeedResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	// Decode the response.
+	var jsonLinkresponse JSONLinkResponseItem
+	err = json.NewDecoder(resp.Body).Decode(&jsonLinkresponse)
+	if err != nil {
+		log.Printf(`[jsonLink] Error decoding response: %s`, err)
+		return FeedResponse{}, err
+	}
 
 	addURLToList(url)
 
-	response := createFeedResponse(feed, url, baseDomain, favicon, feedItems)
+	response := createFeedResponse(feed, url, baseDomain, jsonLinkresponse.Favicon, jsonLinkresponse, feedItems)
 
 	// Cache the new feed details and items
 	if err := cache.Set(feed_prefix, cacheKey, response, 24*time.Hour); err != nil {
@@ -384,11 +400,11 @@ func getFavicon(feed *gofeed.Feed) string {
 	return favicon
 }
 
-func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, feedItems []FeedResponseItem) FeedResponse {
+func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, JSONLinkResponse JSONLinkResponseItem, feedItems []FeedResponseItem) FeedResponse {
 	return FeedResponse{
 		Status:        "ok",
 		GUID:          createHash(url),
-		SiteTitle:     feed.Title,
+		SiteTitle:     JSONLinkResponse.Sitename,
 		FeedTitle:     feed.Title,
 		FeedUrl:       url,
 		Description:   feed.Description,
@@ -398,7 +414,7 @@ func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, feed
 		Published:     feed.Published,
 		Author:        feed.Author,
 		Language:      feed.Language,
-		Favicon:       favicon,
+		Favicon:       JSONLinkResponse.Favicon,
 		Categories:    strings.Join(feed.Categories, ", "),
 		Items:         &feedItems,
 	}

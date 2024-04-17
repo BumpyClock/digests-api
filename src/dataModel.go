@@ -80,7 +80,7 @@ type ReaderViewResult struct {
 	TextContent string `json:"textContent"`
 }
 
-type jsonLinkResponseItem struct {
+type JSONLinkResponseItem struct {
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
 	Images      []string `json:"images"`
