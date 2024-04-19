@@ -17,7 +17,8 @@ RUN go mod download
 COPY src/ .
 
 # Build the Go app
-RUN go build -o main .
+# RUN go build -o main .
+RUN GOOS=linux GOARCH=amd64 go build -o main .
 
 # Expose port 8080 to the outside world
 EXPOSE 8000
