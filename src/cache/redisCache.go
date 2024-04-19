@@ -56,11 +56,13 @@ func (cache *RedisCache) Set(prefix string, key string, value interface{}, expir
 		return err
 	}
 
-	err = cache.client.Expire(ctx, prefix+":"+key, expiration).Err()
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to set expiration for key in Redis")
+	if expiration != 0 {
+		err = cache.client.Expire(ctx, prefix+":"+key, expiration).Err()
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"key": key,
+			}).Error("Failed to set expiration for key in Redis")
+		}
 	}
 
 	return err
