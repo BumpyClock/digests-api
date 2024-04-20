@@ -84,7 +84,7 @@ type jsonLinkResponseImage struct {
 
 func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) {
 	// Prepare the API URL with the required parameters.
-	apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", pageURL)
+	apiURL := fmt.Sprintf("https://link2json.azurewebsites.net/extract?url=%s", pageURL)
 
 	// Send the GET request.
 	resp, err := http.Get(apiURL)

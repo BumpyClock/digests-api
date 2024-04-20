@@ -147,12 +147,12 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 	feedItems := processFeedItems(feed.Items)
 	baseDomain := getBaseDomain(feed.Link)
 	var favicon string
-	apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", baseDomain)
+	apiURL := fmt.Sprintf("https://link2json.azurewebsites.net/extract?url=%s", baseDomain)
 
 	// Send the GET request.
 	resp, err := http.Get(apiURL)
 	if err != nil {
-		log.Printf(`[jsonLink] Error sending GET request: %s`, err)
+		log.Printf(`[link2JSON] Error sending GET request: %s`, err)
 
 	}
 	defer resp.Body.Close()
@@ -166,10 +166,10 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 		decodeErr := json.NewDecoder(resp.Body).Decode(&errorResponse)
 		if decodeErr == nil && !errorResponse.Success && errorResponse.Error == "Too many request" {
 			// Handle the "Too many request" error.
-			log.Printf(`[jsonLink] Too many requests: %s`, errorResponse.Error)
+			log.Printf(`[link2json] Too many requests: %s`, errorResponse.Error)
 		}
 
-		log.Printf(`[jsonLink] Error decoding response: %s`, err)
+		log.Printf(`[link2json] Error decoding response: %s`, err)
 		favicon = getFavicon(feed)
 	}
 
@@ -384,7 +384,7 @@ func getFavicon(feed *gofeed.Feed) string {
 
 		parsedURL := getBaseDomain(feed.Link)
 		// Prepare the API URL with the required parameters.
-		apiURL := fmt.Sprintf("https://jsonlink.io/api/extract?api_key=%s&url=%s", "pk_00571ed4d0f3142cfe50bea69719c5aa2a377f46", parsedURL)
+		apiURL := fmt.Sprintf("https://link2json.azurewebsites.net/extract?url=%s", parsedURL)
 
 		// Send the GET request.
 		resp, err := http.Get(apiURL)
