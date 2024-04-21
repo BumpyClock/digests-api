@@ -50,7 +50,7 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 			cacheKey := createHash(url)
 			var result ReaderViewResult
 			if err := cache.Get(readerView_prefix, cacheKey, &result); err != nil {
-				log.Println("[ReaderView]Cache miss for", url)
+				log.Info("[ReaderView]Cache miss for", url)
 				result = getReaderViewResult(url)
 				if len(result.TextContent) < 100 || result.TextContent == "Please enable JS and disable any ad blocker" {
 					result.TextContent = "<div id=\"readability-page-1\" class=\"page\"><p id=\"cmsg\">Error getting reader view, site is likely requires a subscription. Please open the link in a new tab.</p>\n</div><div><a href=\"" + result.URL + "\" target=\"_blank\" rel=\"noopener noreferrer\">Open link in a new tab</a></div>"
