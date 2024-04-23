@@ -81,15 +81,23 @@ type ReaderViewResult struct {
 }
 
 type JSONLinkResponseItem struct {
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Images      []string `json:"images"`
-	Sitename    string   `json:"sitename"`
-	Favicon     string   `json:"favicon"`
-	Duration    int      `json:"duration"`
-	Domain      string   `json:"domain"`
-	URL         string   `json:"url"`
-	Source      string   `json:"source"`
+	Title       string             `json:"title"`
+	Description string             `json:"description"`
+	Images      []JSONLinkWebImage `json:"images"`
+	Sitename    string             `json:"sitename"`
+	Favicon     string             `json:"favicon"`
+	Duration    int                `json:"duration"`
+	Domain      string             `json:"domain"`
+	URL         string             `json:"url"`
+	Source      string             `json:"source"`
+}
+
+type JSONLinkWebImage struct {
+	URL    string `json:"url"`
+	Alt    string `json:"alt,omitempty"`
+	Type   string `json:"type,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
 }
 
 type JSONLinkErrorResponse struct {
@@ -103,6 +111,9 @@ const redis_password = ""
 const redis_db = 0
 const feed_prefix = "feed:"
 const readerView_prefix = "readerViewContent:"
+
+var link2JsonCount = 0
+var thumbnailfromSourceCount = 0
 
 // const redis_feedsItems_key = "feedsItems"
 // const redis_feedDetails_key = "feedDetails"

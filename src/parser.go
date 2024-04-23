@@ -169,7 +169,7 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 			log.Printf(`[link2json] Too many requests: %s`, errorResponse.Error)
 		}
 
-		log.Printf(`[link2json] Error decoding response: %s`, err)
+		log.Printf(`[link2json] Error decoding response: %s for URL %s`, err, baseDomain)
 		favicon = getFavicon(feed)
 	}
 

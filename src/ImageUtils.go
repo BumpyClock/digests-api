@@ -79,7 +79,7 @@ func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 }
 
 type jsonLinkResponseImage struct {
-	Images []string `json:"images"`
+	Images []JSONLinkWebImage `json:"images"`
 }
 
 func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) {
@@ -97,11 +97,12 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 		var response jsonLinkResponseImage
 		err = json.NewDecoder(resp.Body).Decode(&response)
 		if err != nil {
-			log.Printf(`[Thumbnail Discovery] Error decoding response: %s`, err)
+			log.Printf(`[Thumbnail Discovery] Error decoding response: %s for url: %s`, err, pageURL)
 		} else if len(response.Images) > 0 {
 			// Get the thumbnail from the response.
 			// log.Printf(`[Thumbnail Discovery] Found thumbnail for URL %s: %s`, pageURL, response.Images[0])
-			return response.Images[0], nil
+			link2JsonCount = link2JsonCount + 1
+			return response.Images[0].URL, nil
 		}
 	}
 
@@ -255,6 +256,7 @@ func DiscoverFavicon(pageURL string) string {
 			}
 		}
 	}
+	thumbnailfromSourceCount = thumbnailfromSourceCount + 1
 
 	return favicon
 }
