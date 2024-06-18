@@ -266,7 +266,7 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 	}
 
 	// print the value of item.ItunesExt.Image
-	log.Println(item.ITunesExt.Image)
+	// log.Println(item.ITunesExt.Image)
 
 	thumbnailFinder := NewThumbnailFinder() // Initialize the ThumbnailFinder
 
