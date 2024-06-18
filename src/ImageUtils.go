@@ -103,37 +103,6 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 	return "", nil
 }
 
-// fetchImageFromSource fetches the given URL and attempts to find an image.
-// func fetchImageFromSource(pageURL string) (string, error) {
-// 	// Custom logic for specific domains can be added here
-// 	resp, err := http.Get(pageURL)
-// 	if err != nil {
-// 		return "", fmt.Errorf("error fetching page: %w", err)
-// 	}
-// 	defer resp.Body.Close()
-
-// 	// Use goquery to parse the HTML
-// 	doc, err := goquery.NewDocumentFromReader(resp.Body)
-// 	if err != nil {
-// 		return "", fmt.Errorf("error loading HTTP response body: %w", err)
-// 	}
-
-// 	// Attempt to find an image
-// 	src, exists := doc.Find("article img, .content img").First().Attr("src")
-// 	if exists {
-// 		// Handle relative URLs
-// 		if !strings.HasPrefix(src, "http") {
-// 			parsedURL, err := url.Parse(pageURL)
-// 			if err != nil {
-// 				return "", err
-// 			}
-// 			return parsedURL.Scheme + "://" + parsedURL.Host + src, nil
-// 		}
-// 		return src, nil
-// 	}
-// 	return "", nil
-// }
-
 func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 	defer func() {
 		if r := recover(); r != nil {

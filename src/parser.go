@@ -259,6 +259,15 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 		thumbnail = item.Enclosures[0].URL // Use the first enclosure as the thumbnail
 	}
 
+	if item.ITunesExt != nil {
+		if item.ITunesExt.Image != "" {
+			thumbnail = item.ITunesExt.Image
+		}
+	}
+
+	// print the value of item.ItunesExt.Image
+	log.Println(item.ITunesExt.Image)
+
 	thumbnailFinder := NewThumbnailFinder() // Initialize the ThumbnailFinder
 
 	// Extract thumbnail from content or description if not found
