@@ -14,7 +14,6 @@ import (
 	"github.com/disintegration/imaging"
 	"golang.org/x/net/html"
 
-	"github.com/BumpyClock/go-link2json"
 	"github.com/EdlinOrg/prominentcolor"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/mmcdole/gofeed"
@@ -152,14 +151,6 @@ func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 	}
 
 	return 128, 128, 128
-}
-
-func getURLMetaData(url string) (*link2json.MetaDataResponseItem, error) {
-	metaData, err := link2json.GetMetadata(url)
-	if err != nil {
-		return nil, err
-	}
-	return metaData, nil
 }
 
 func DiscoverFavicon(pageURL string) string {
