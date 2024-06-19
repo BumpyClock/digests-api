@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	link2json "github.com/BumpyClock/go-link2json"
 	"github.com/disintegration/imaging"
 	"golang.org/x/net/html"
 
@@ -25,6 +26,16 @@ type ThumbnailFinder struct {
 
 func NewThumbnailFinder() *ThumbnailFinder {
 	return &ThumbnailFinder{}
+}
+
+func GetMetaData(url string) (link2json.MetaDataResponseItem, error) {
+	// Get metadata from the URL
+	metaData, err := link2json.GetMetadata(url)
+	if err != nil {
+		return link2json.MetaDataResponseItem{}, err
+	}
+
+	return *metaData, nil
 }
 
 func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {

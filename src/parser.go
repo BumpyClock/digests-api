@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/net/html"
 
-	readability "github.com/go-shiori/go-readability"
+	link2json "github.com/BumpyClock/go-link2json"
 	"github.com/jinzhu/copier"
 	"github.com/mmcdole/gofeed"
 	"github.com/sirupsen/logrus"
@@ -147,11 +147,31 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 	}
 
 	feedItems := processFeedItems(feed.Items)
-	favicon := getFavicon(feed)
+	// favicon := getFavicon(feed)
 	baseDomain := getBaseDomain(feed.Link)
 	addURLToList(url)
 
-	response := createFeedResponse(feed, url, baseDomain, favicon, feedItems)
+	basedomainCacheKey := createHash(baseDomain)
+	var metaData = link2json.MetaDataResponseItem{}
+
+	if err := cache.Get(metaData_prefix, basedomainCacheKey, &metaData); err != nil {
+		tempmetaData, err := GetMetaData(baseDomain)
+		if err != nil {
+			log.Printf("Failed to get metadata for %s: %v", baseDomain, err)
+		} else {
+			if err := cache.Set(metaData_prefix, cacheKey, metaData, 24*time.Hour); err != nil {
+				metaData = tempmetaData
+				log.Printf("Added metaData to cache metadata for %s: %v", baseDomain, err)
+			} else {
+				metaData = tempmetaData
+			}
+		}
+	} else {
+		log.Printf("Loaded metadata from cache for %s", baseDomain)
+
+	}
+
+	response := createFeedResponse(feed, url, metaData, feedItems)
 
 	// Cache the new feed details and items
 	if err := cache.Set(feed_prefix, cacheKey, response, 24*time.Hour); err != nil {
@@ -250,6 +270,12 @@ func processFeedItems(items []*gofeed.Item) []FeedResponseItem {
 }
 
 func processFeedItem(item *gofeed.Item) FeedResponseItem {
+	cacheKey := createHash(item.Link)
+	metaData := link2json.MetaDataResponseItem{}
+	if cache.Get(metaData_prefix, cacheKey, &metaData) == nil {
+		log.Printf("Loaded metadata from cache for %s", item.Link)
+	}
+
 	author := ""
 	if item.Author != nil {
 		author = item.Author.Name
@@ -301,13 +327,38 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 
 	// Extract thumbnail from article if not found
 	if thumbnail == "" && item.ITunesExt == nil {
-		cacheKey := createHash(item.Link)
-		tempReaderViewResult := getReaderViewResult(item.Link)
-		thumbnail = tempReaderViewResult.Image
-		if err := cache.Set(readerView_prefix, cacheKey, tempReaderViewResult, 24*time.Hour); err != nil {
-			log.Printf("Failed to cache feed details for %s: %v", item.Link, err)
+
+		if len(metaData.Images) > 0 {
+			thumbnail = metaData.Images[0].URL
+		} else {
+			metaData, err := GetMetaData(item.Link)
+			if err != nil {
+				log.Printf("Failed to get metadata for %s: %v", item.Link, err)
+			} else {
+				if len(metaData.Images) > 0 {
+					thumbnail = metaData.Images[0].URL
+					if err := cache.Set(metaData_prefix, cacheKey, metaData, 24*time.Hour); err != nil {
+						log.Printf("Failed to cache metadata for %s: %v", item.Link, err)
+
+					}
+				}
+			}
 		}
 
+		cacheKey := createHash(getBaseDomain(item.Link))
+		// check if the metaData for baseDomain is already cached
+		if err := cache.Get(metaData_prefix, cacheKey, &metaData); err != nil {
+			// if not cached get the metaData for baseDomain
+			metaData, err = GetMetaData(getBaseDomain(item.Link))
+			if err != nil {
+				log.Printf("Failed to get metadata for %s: %v", getBaseDomain(item.Link), err)
+			} else {
+				if err := cache.Set(metaData_prefix, cacheKey, metaData, 24*time.Hour); err != nil {
+					log.Printf("Failed to cache metadata for %s: %v", getBaseDomain(item.Link), err)
+
+				}
+			}
+		}
 	}
 
 	thumbnailColor := RGBColor{128, 128, 128}
@@ -384,29 +435,7 @@ func standardizeDate(dateStr string) string {
 	return standardizedDate
 }
 
-func getFavicon(feed *gofeed.Feed) string {
-	favicon := ""
-	if feed.Image != nil {
-		favicon = feed.Image.URL
-	} else {
-		baseDomain := getBaseDomain(feed.Link)
-
-		article, err := readability.FromURL(baseDomain, 10*time.Second)
-		if err == nil {
-			favicon = article.Favicon
-		} else {
-			log.Printf(`[Favicon Discovery] Error getting favicon from readability: %s`, err)
-		}
-	}
-
-	if favicon == "" {
-		favicon = DiscoverFavicon(feed.Link)
-	}
-
-	return favicon
-}
-
-func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, feedItems []FeedResponseItem) FeedResponse {
+func createFeedResponse(feed *gofeed.Feed, url string, metaData link2json.MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
 	var feedType string
 	if feed.ITunesExt != nil {
 		feedType = "podcast"
@@ -418,17 +447,17 @@ func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, feed
 		Status:        "ok",
 		GUID:          createHash(url),
 		Type:          feedType,
-		SiteTitle:     feed.Title,
+		SiteTitle:     metaData.Sitename,
 		FeedTitle:     feed.Title,
 		FeedUrl:       url,
 		Description:   feed.Description,
-		Link:          baseDomain,
+		Link:          metaData.Domain,
 		LastUpdated:   standardizeDate(feed.Updated),
 		LastRefreshed: time.Now().Format(layout),
 		Published:     feed.Published,
 		Author:        feed.Author,
 		Language:      feed.Language,
-		Favicon:       favicon,
+		Favicon:       metaData.Favicon,
 		Categories:    strings.Join(feed.Categories, ", "),
 		Items:         &feedItems,
 	}
