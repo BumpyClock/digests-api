@@ -26,6 +26,8 @@ import (
 
 var httpClient = &http.Client{Timeout: 20 * time.Second}
 
+const layout = "2006-01-02T15:04:05Z07:00"
+
 func createHash(s string) string {
 	hash := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(hash[:])
@@ -119,7 +121,6 @@ func processURLs(urls []string) []FeedResponse {
 }
 
 func isCacheStale(lastRefreshed string) bool {
-	layout := "2006-01-02T15:04:05Z" // updated time format
 	parsedTime, err := time.Parse(layout, lastRefreshed)
 	if err != nil {
 		log.Printf("Failed to parse LastRefreshed: %v", err)
@@ -351,21 +352,32 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 }
 
 func standardizeDate(dateStr string) string {
+	if dateStr == "" {
+		log.Info("[Standardize Date] Received empty date string")
+		return "" // Or return a default date string if necessary
+	}
+
 	const outputLayout = "2006-01-02T15:04:05Z07:00"
 	var standardizedDate string
+	dateFormats := []string{
+		time.RFC1123,
+		time.RFC1123Z,
+		time.RFC3339,
+		// Add more formats as needed
+	}
 
-	// Attempt to parse the date in various formats
-	parsedTime, err := time.Parse(time.RFC1123, dateStr)
-	if err != nil {
-		parsedTime, err = time.Parse(time.RFC1123Z, dateStr)
+	var parsedTime time.Time
+	var err error
+	for _, layout := range dateFormats {
+		parsedTime, err = time.Parse(layout, dateStr)
+		if err == nil {
+			standardizedDate = parsedTime.Format(outputLayout)
+			break
+		}
 	}
+
 	if err != nil {
-		parsedTime, err = time.Parse(time.RFC3339, dateStr)
-	}
-	if err == nil {
-		standardizedDate = parsedTime.Format(outputLayout)
-	} else {
-		log.Printf("[Standardize Date] Failed to parse date: %v", err)
+		log.Infof("[Standardize Date] Failed to parse date: %v", err)
 		// Handle error, maybe set a default value or leave the field empty
 	}
 
@@ -412,7 +424,7 @@ func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, feed
 		Description:   feed.Description,
 		Link:          baseDomain,
 		LastUpdated:   standardizeDate(feed.Updated),
-		LastRefreshed: time.Now().Format("Mon 2 Jan 2006 3:04PM"),
+		LastRefreshed: time.Now().Format(layout),
 		Published:     feed.Published,
 		Author:        feed.Author,
 		Language:      feed.Language,
@@ -439,7 +451,6 @@ func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseIte
 
 	// Sort the feedItems by Published date in descending order
 	sort.Slice(feedItems, func(i, j int) bool {
-		const layout = "2006-01-02T15:04:05Z07:00"
 		timeI, errI := time.Parse(layout, feedItems[i].Published)
 		if errI != nil {
 			log.Printf("[Sort]Failed to parse time for item I: %v", errI)
