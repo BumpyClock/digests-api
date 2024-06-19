@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"sort"
 
 	_ "image/gif"
 	_ "image/jpeg"
@@ -214,6 +215,7 @@ func processURL(url string) FeedResponse {
 			"error": err,
 		}).Error("Failed to fetch and cache feed")
 		return FeedResponse{
+			Type:    "unknown",
 			FeedUrl: url,
 			GUID:    cacheKey,
 			Status:  "error",
@@ -256,7 +258,9 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 
 	thumbnail := ""
 	if len(item.Enclosures) > 0 {
-		thumbnail = item.Enclosures[0].URL // Use the first enclosure as the thumbnail
+		if item.Enclosures[0].URL != "" && item.Enclosures[0].Type == "image/jpeg" {
+			thumbnail = item.Enclosures[0].URL // Use the first enclosure as the thumbnail
+		}
 	}
 
 	if item.ITunesExt != nil {
@@ -271,7 +275,7 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 	thumbnailFinder := NewThumbnailFinder() // Initialize the ThumbnailFinder
 
 	// Extract thumbnail from content or description if not found
-	if thumbnail == "" {
+	if thumbnail == "" && item.ITunesExt != nil {
 		if item.Content != "" {
 			thumbnail = thumbnailFinder.extractThumbnailFromContent(item.Content)
 		} else if item.Description != "" {
@@ -295,7 +299,7 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 	}
 
 	// Extract thumbnail from article if not found
-	if thumbnail == "" {
+	if thumbnail == "" && item.ITunesExt == nil {
 		cacheKey := createHash(item.Link)
 		tempReaderViewResult := getReaderViewResult(item.Link)
 		thumbnail = tempReaderViewResult.Image
@@ -320,14 +324,23 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 
 	item.GUID = createHash(item.Link)
 
+	standardizedPublished := standardizeDate(item.Published)
+	var itemType string
+	if item.ITunesExt != nil {
+		itemType = "podcast"
+	} else {
+		itemType = "article"
+	}
+
 	return FeedResponseItem{
+		Type:            itemType,
 		ID:              item.GUID,
 		Title:           item.Title,
 		Description:     description,
 		Link:            item.Link,
 		Author:          author,
-		Published:       item.Published,
-		Created:         item.Published,
+		Published:       standardizedPublished,
+		Created:         standardizedPublished,
 		Content:         parsedContent,
 		Content_Encoded: item.Content,
 		Categories:      categories,
@@ -335,6 +348,28 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 		Thumbnail:       thumbnail,
 		ThumbnailColor:  thumbnailColor,
 	}
+}
+
+func standardizeDate(dateStr string) string {
+	const outputLayout = "2006-01-02T15:04:05Z07:00"
+	var standardizedDate string
+
+	// Attempt to parse the date in various formats
+	parsedTime, err := time.Parse(time.RFC1123, dateStr)
+	if err != nil {
+		parsedTime, err = time.Parse(time.RFC1123Z, dateStr)
+	}
+	if err != nil {
+		parsedTime, err = time.Parse(time.RFC3339, dateStr)
+	}
+	if err == nil {
+		standardizedDate = parsedTime.Format(outputLayout)
+	} else {
+		log.Printf("[Standardize Date] Failed to parse date: %v", err)
+		// Handle error, maybe set a default value or leave the field empty
+	}
+
+	return standardizedDate
 }
 
 func getFavicon(feed *gofeed.Feed) string {
@@ -360,16 +395,24 @@ func getFavicon(feed *gofeed.Feed) string {
 }
 
 func createFeedResponse(feed *gofeed.Feed, url, baseDomain, favicon string, feedItems []FeedResponseItem) FeedResponse {
+	var feedType string
+	if feed.ITunesExt != nil {
+		feedType = "podcast"
+	} else {
+		feedType = "article"
+	}
+
 	return FeedResponse{
 		Status:        "ok",
 		GUID:          createHash(url),
+		Type:          feedType,
 		SiteTitle:     feed.Title,
 		FeedTitle:     feed.Title,
 		FeedUrl:       url,
 		Description:   feed.Description,
 		Link:          baseDomain,
-		LastUpdated:   feed.Updated,
-		LastRefreshed: time.Now().Format(time.RFC3339),
+		LastUpdated:   standardizeDate(feed.Updated),
+		LastRefreshed: time.Now().Format("Mon 2 Jan 2006 3:04PM"),
 		Published:     feed.Published,
 		Author:        feed.Author,
 		Language:      feed.Language,
@@ -388,10 +431,45 @@ func collectResponses(responses chan FeedResponse) []FeedResponse {
 }
 
 func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseItem {
+	itemCount := 20 // Default to 20 items
 	var feedItems []FeedResponseItem
 	for itemResponse := range itemResponses {
 		feedItems = append(feedItems, itemResponse)
 	}
+
+	// Sort the feedItems by Published date in descending order
+	sort.Slice(feedItems, func(i, j int) bool {
+		const layout = "2006-01-02T15:04:05Z07:00"
+		timeI, errI := time.Parse(layout, feedItems[i].Published)
+		if errI != nil {
+			log.Printf("[Sort]Failed to parse time for item I: %v", errI)
+			return false
+		}
+		timeJ, errJ := time.Parse(layout, feedItems[j].Published)
+		if errJ != nil {
+			log.Printf("[Sort]Failed to parse time for item J: %v", errJ)
+			return true // Assume i < j if j's time fails to parse
+		}
+		return timeI.After(timeJ) // Descending order
+	})
+
+	// Adjust the number of items returned based on itemCount
+	if itemCount != 0 {
+		if itemCount == -1 {
+			// Return all items
+			return feedItems
+		} else if len(feedItems) > itemCount {
+			// Return up to itemCount items
+			return feedItems[:itemCount]
+		}
+		// If itemCount is greater than the number of items, return all items
+	} else {
+		// Default to returning 20 items or all if fewer than 20
+		if len(feedItems) > 20 {
+			return feedItems[:20]
+		}
+	}
+
 	return feedItems
 }
 

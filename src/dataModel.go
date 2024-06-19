@@ -29,6 +29,7 @@ type ExtendedItem struct {
 
 // FeedResponseItem represents an enriched structure for an individual feed item.
 type FeedResponseItem struct {
+	Type            string              `json:"type"`
 	ID              string              `json:"id"`
 	Title           string              `json:"title"`
 	Description     string              `json:"description"`
@@ -46,6 +47,7 @@ type FeedResponseItem struct {
 
 // FeedResponse represents the structure for the overall feed, including metadata and items.
 type FeedResponse struct {
+	Type          string              `json:"type"`
 	GUID          string              `json:"guid"`
 	Status        string              `json:"status"`
 	Error         error               `json:"error,omitempty"`

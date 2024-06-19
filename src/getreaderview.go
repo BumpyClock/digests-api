@@ -56,7 +56,7 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 					result.TextContent = "<div id=\"readability-page-1\" class=\"page\"><p id=\"cmsg\">Error getting reader view, site is likely requires a subscription. Please open the link in a new tab.</p>\n</div><div><a href=\"" + result.URL + "\" target=\"_blank\" rel=\"noopener noreferrer\">Open link in a new tab</a></div>"
 					result.ReaderView = result.TextContent
 				}
-				if err := cache.Set(readerView_prefix, cacheKey, result, 1*time.Hour); err != nil {
+				if err := cache.Set(readerView_prefix, cacheKey, result, 24*time.Hour); err != nil {
 					log.Printf("[ReaderView]Failed to cache reader view for %s: %v", url, err)
 				}
 			} else {
@@ -77,6 +77,7 @@ func getReaderView(url string) (readability.Article, error) {
 		log.Errorf("failed to parse %s, %v\n", url, err)
 		return readability.Article{}, err
 	}
+	// log.Info("Parsed: ", url, "successfully")
 
 	return article, nil
 }

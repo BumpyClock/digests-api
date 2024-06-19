@@ -14,6 +14,7 @@ import (
 	"github.com/disintegration/imaging"
 	"golang.org/x/net/html"
 
+	"github.com/BumpyClock/go-link2json"
 	"github.com/EdlinOrg/prominentcolor"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/mmcdole/gofeed"
@@ -153,34 +154,14 @@ func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 	return 128, 128, 128
 }
 
-// func extractColorFromThumbnail_colorThief(url string) (r, g, b uint8) {
-// 	if url == "" {
-// 		return 128, 128, 128 // RGB values for gray
-// 	}
-// 	resp, err := http.Get(url)
-// 	if err != nil {
-// 		return 0, 0, 0
-// 	}
-// 	defer resp.Body.Close()
+func getURLMetaData(url string) (*link2json.MetaDataResponseItem, error) {
+	metaData, err := link2json.GetMetadata(url)
+	if err != nil {
+		return nil, err
+	}
+	return metaData, nil
+}
 
-// 	img, _, err := image.Decode(resp.Body)
-// 	if err != nil {
-// 		return 0, 0, 0
-// 	}
-
-// 	// Use colorthief-go to get the dominant color as a color.Color
-// 	dominantColor, err := colorthief.GetColor(img)
-// 	if err != nil {
-// 		return 0, 0, 0
-// 	}
-
-// 	// Convert color.Color to color.RGBA
-// 	rgba := color.RGBAModel.Convert(dominantColor).(color.RGBA)
-
-// 	return rgba.R, rgba.G, rgba.B
-// }
-
-// DiscoverFavicon fetches the webpage at the given URL and attempts to find a favicon.
 func DiscoverFavicon(pageURL string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
