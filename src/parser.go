@@ -443,11 +443,16 @@ func createFeedResponse(feed *gofeed.Feed, url string, metaData link2json.MetaDa
 		feedType = "article"
 	}
 
+	SiteTitle := metaData.Sitename
+	if SiteTitle == "" {
+		SiteTitle = feed.Title
+	}
+
 	return FeedResponse{
 		Status:        "ok",
 		GUID:          createHash(url),
 		Type:          feedType,
-		SiteTitle:     metaData.Sitename,
+		SiteTitle:     SiteTitle,
 		FeedTitle:     feed.Title,
 		FeedUrl:       url,
 		Description:   feed.Description,
