@@ -20,7 +20,6 @@ func errorHandlingMiddleware(next http.Handler) http.Handler {
 func InitializeRoutes(mux *http.ServeMux) {
 	// Apply the errorHandlingMiddleware to the validateURLsHandler
 	mux.Handle("/validate", errorHandlingMiddleware(http.HandlerFunc(validateURLsHandler)))
-
 	// Apply the errorHandlingMiddleware to the parseHandler
 	mux.Handle("/parse", errorHandlingMiddleware(http.HandlerFunc(parseHandler)))
 

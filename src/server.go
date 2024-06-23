@@ -85,23 +85,6 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func CORSMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Set CORS headers for all responses, including preflights
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
-
-		// Immediately respond to OPTIONS method for CORS preflight request
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
 func main() {
 
 	// Start pprof profiling
@@ -114,12 +97,23 @@ func main() {
 	redis := flag.String("redis", "localhost:6379", "redis address")
 	flag.Parse()
 	mux := http.NewServeMux()
-	InitializeRoutes(mux) // Assuming you've defined this to set up routes
+
+	// Apply CORS middleware
+	corsMiddleware := cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS", "PUT", "DELETE"},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization"},
+		AllowCredentials: true,
+	}).Handler
 
 	// Wrap the mux with the middleware
-	handlerChain := cors.Default().Handler(mux)      // Apply CORS first
+	handlerChain := corsMiddleware(mux)              // Apply CORS first
 	handlerChain = RateLimitMiddleware(handlerChain) // Apply rate limiting next
 	handlerChain = GzipMiddleware(handlerChain)      // Apply Gzip compression last
+
+	InitializeRoutes(mux)
+	log.Printf("Initialized mux: %v", mux)
+
 	redis_address = *redis
 
 	log.Info("Opening cache connection...")
