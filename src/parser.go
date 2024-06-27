@@ -374,6 +374,8 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 		description = parsedContent
 	}
 
+	description = parseHTMLContent(description)
+
 	item.GUID = createHash(item.Link)
 
 	standardizedPublished := standardizeDate(item.Published)
@@ -477,7 +479,7 @@ func collectResponses(responses chan FeedResponse) []FeedResponse {
 }
 
 func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseItem {
-	itemCount := 20 // Default to 20 items
+	// itemCount := 20 // Default to 20 items
 	var feedItems []FeedResponseItem
 	for itemResponse := range itemResponses {
 		feedItems = append(feedItems, itemResponse)
@@ -499,21 +501,21 @@ func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseIte
 	})
 
 	// Adjust the number of items returned based on itemCount
-	if itemCount != 0 {
-		if itemCount == -1 {
-			// Return all items
-			return feedItems
-		} else if len(feedItems) > itemCount {
-			// Return up to itemCount items
-			return feedItems[:itemCount]
-		}
-		// If itemCount is greater than the number of items, return all items
-	} else {
-		// Default to returning 20 items or all if fewer than 20
-		if len(feedItems) > 20 {
-			return feedItems[:20]
-		}
-	}
+	// if itemCount != 0 {
+	// 	if itemCount == -1 {
+	// 		// Return all items
+	// 		return feedItems
+	// 	} else if len(feedItems) > itemCount {
+	// 		// Return up to itemCount items
+	// 		return feedItems[:itemCount]
+	// 	}
+	// 	// If itemCount is greater than the number of items, return all items
+	// } else {
+	// 	// Default to returning 20 items or all if fewer than 20
+	// 	if len(feedItems) > 20 {
+	// 		return feedItems[:20]
+	// 	}
+	// }
 
 	return feedItems
 }
