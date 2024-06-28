@@ -4,6 +4,8 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+        
+
         {
             "name": "Debug with Redis",
             "type": "go",
@@ -19,6 +21,13 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/src"
+        },
+        {
+            "name": "Create builds",
+            "type": "process",
+            "request": "launch",
+            "runtimeExecutable": "npm",
+            "preLaunchTask": "build" // Name of the task to run before launching
         }
     ]
 }

@@ -6,6 +6,12 @@
             "type": "shell",
             "command": "sh ${workspaceFolder}/run_redis.sh",
             "problemMatcher": []
+        },
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "sh ${workspaceFolder}/src/build_scripts/build_all.sh",
+            "problemMatcher": []
         }
     ]
 }
