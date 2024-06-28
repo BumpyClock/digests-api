@@ -6,4 +6,4 @@ export GOOS=linux
 export GOARCH=arm64
 # export GOARM=7
 export CGO_ENABLED=1
-/usr/local/go/bin/go build -o ../../build/linux/arm64/ -ldflags "-s -w" -buildmode=pie ../
+go build -o ../../build/linux/arm64/ -ldflags "-s -w" -buildmode=pie ../
