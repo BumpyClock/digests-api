@@ -1,3 +1,5 @@
+echo "Building linux amd64"
+
 unset GOOS
 unset GOARCH
 unset GOARM

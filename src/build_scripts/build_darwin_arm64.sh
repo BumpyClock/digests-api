@@ -1,3 +1,5 @@
+echo "Building MacOS ARM"
+
 unset GOOS
 unset GOARCH
 unset GOARM

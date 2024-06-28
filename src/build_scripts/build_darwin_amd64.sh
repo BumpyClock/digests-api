@@ -1,3 +1,4 @@
+echo "Building MacOS AMD"
 unset GOOS
 unset GOARCH
 unset GOARM

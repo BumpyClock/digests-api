@@ -1,3 +1,5 @@
+echo "Building Windows ARM"
+
 unset GOOS
 unset GOARCH
 unset GOARM

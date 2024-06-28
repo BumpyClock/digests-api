@@ -1,3 +1,5 @@
+echo "Building Linux ARM"
+
 unset GOOS
 unset GOARCH
 unset GOARM
