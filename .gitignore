@@ -1,7 +1,8 @@
 src/__debug_*.*
 src/__debug_bin*
 build/digests-api
-build/*.*
+build/*
 build/macos/digests-api
 src/build/digests-api-linux-amd64
 src/build/*.*
+src/build
