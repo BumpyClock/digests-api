@@ -19,7 +19,7 @@ import (
 )
 
 var limiter = rate.NewLimiter(1, 3) // Allow 1 request per second with a burst of 3 requests
-var cache *digestsCache.RedisCache
+var cache digestsCache.Cache        // Use the Cache interface
 var cacheErr error
 var log = logrus.New()
 var urlList []string
@@ -97,6 +97,7 @@ func main() {
 	redis := flag.String("redis", "localhost:6379", "redis address")
 	flag.Parse()
 	mux := http.NewServeMux()
+	log.Printf("mux: %v", mux)
 
 	// Apply CORS middleware
 	corsMiddleware := cors.New(cors.Options{
@@ -110,16 +111,15 @@ func main() {
 	handlerChain := corsMiddleware(mux)              // Apply CORS first
 	handlerChain = RateLimitMiddleware(handlerChain) // Apply rate limiting next
 	handlerChain = GzipMiddleware(handlerChain)      // Apply Gzip compression last
-
-	InitializeRoutes(mux)
-	log.Printf("Initialized mux: %v", mux)
+	InitializeRoutes(mux)                            // Assuming you've defined this to set up routes
 
 	redis_address = *redis
 
 	log.Info("Opening cache connection...")
 	cache, cacheErr = digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
 	if cacheErr != nil {
-		log.Fatalf("Failed to open cache connection: %v", cacheErr)
+		log.Warn("Failed to open Redis cache, falling back to in-memory cache")
+		cache = digestsCache.NewGoCache(5*time.Minute, 10*time.Minute)
 	}
 
 	cachesize, cacheerr := cache.Count()
