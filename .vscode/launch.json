@@ -28,6 +28,15 @@
             "request": "launch",
             "runtimeExecutable": "npm",
             "preLaunchTask": "build" // Name of the task to run before launching
-        }
+        },
+        {
+            "name": "Attach to Air",
+            "type": "go",
+            "mode": "remote",
+            "request": "attach",
+            "host": "127.0.0.1",
+            "port": 2345
+          }
+        
     ]
 }

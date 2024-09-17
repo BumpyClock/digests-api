@@ -52,4 +52,6 @@ require (
 	golang.org/x/text v0.16.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
+	kilobit.ca/go/objected v0.0.2 // indirect
+	kilobit.ca/go/podcastindex v0.0.3 // indirect
 )

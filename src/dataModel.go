@@ -82,6 +82,116 @@ type ReaderViewResult struct {
 	TextContent string `json:"textContent"`
 }
 
+type FeedSearchAPIResponseItem struct {
+	Bozo           int      `json:"bozo"`
+	Content_length int      `json:"content_length"`
+	Content_type   string   `json:"content_type"`
+	Description    string   `json:"description"`
+	Favicon        string   `json:"favicon"`
+	Hubs           []string `json:"hubs"`
+	Is_Podcast     bool     `json:"is_podcast"`
+	Is_Push        bool     `json:"is_push"`
+	Item_Count     int      `json:"item_count"`
+	Last_Seen      string   `json:"last_seen"`
+	Last_Updated   string   `json:"last_updated"`
+	Score          float64  `json:"score"`
+	Site_name      string   `json:"site_name"`
+	Site_url       string   `json:"site_url"`
+	Title          string   `json:"title"`
+	Url            string   `json:"url"`
+	Velocity       float64  `json:"velocity"`
+	Version        string   `json:"version"`
+	Self_Url       string   `json:"self_url"`
+}
+
+type FeedSearchResponseItem struct {
+	Title        string  `json:"title"`
+	Url          string  `json:"url"`
+	Site_name    string  `json:"site_name"`
+	Site_url     string  `json:"site_url"`
+	Description  string  `json:"description"`
+	Favicon      string  `json:"favicon"`
+	Is_Podcast   bool    `json:"is_podcast"`
+	Is_Push      bool    `json:"is_push"`
+	Item_Count   int     `json:"item_count"`
+	Last_Seen    string  `json:"last_seen"`
+	Last_Updated string  `json:"last_updated"`
+	Score        float64 `json:"score"`
+}
+
+type PodcastSearchResponseItem struct {
+	Title             string   `json:"title"`
+	Url               string   `json:"url"`
+	Author            string   `json:"author"`
+	Description       string   `json:"description"`
+	FeedImage         string   `json:"feedImage"`
+	Image             string   `json:"image"`
+	Artwork           string   `json:"artwork"`
+	Categories        []string `json:"categories"`
+	PodcastGUID       string   `json:"podcastGuid"`
+	EpisodeCount      int      `json:"episodeCount"`
+	NewestItemPubdate float32  `json:"newestItemPubdate"`
+}
+
+type PodcastAPIResponseItem struct {
+	Id                     int                         `json:"id"`
+	Title                  string                      `json:"title"`
+	Url                    string                      `json:"url"`
+	OriginalUrl            string                      `json:"originalUrl"`
+	Link                   string                      `json:"link"`
+	Description            string                      `json:"description"`
+	Author                 string                      `json:"author"`
+	Language               string                      `json:"language"`
+	OwnerName              string                      `json:"ownerName"`
+	Image                  string                      `json:"image"`
+	Artwork                string                      `json:"artwork"`
+	FeedImage              string                      `json:"feedImage"`
+	FeedID                 string                      `json:"feedId"`
+	PodcastGUID            string                      `json:"podcastGuid"`
+	LastUpdatedTime        string                      `json:"lastUpdatedTime"`
+	LastCrawlTime          int                         `json:"lastCrawlTime"`
+	LastParseTime          int                         `json:"lastParseTime"`
+	InPollingQueue         int                         `json:"inPollingQueue"`
+	Priority               int                         `json:"priority"`
+	LastGoodHttpStatusTime int                         `json:"lastGoodHttpStatusTime"`
+	LastHttpStatus         int                         `json:"lastHttpStatus"`
+	ContentType            string                      `json:"contentType"`
+	ItunedId               int                         `json:"itunedId"`
+	Generator              string                      `json:"generator"`
+	Dead                   int                         `json:"dead"`
+	CrawlErrors            int                         `json:"crawlErrors"`
+	ParseErrors            int                         `json:"parseErrors"`
+	Categories             []string                    `json:"podCast_Categories"`
+	Locked                 int                         `json:"locked"`
+	Medium                 string                      `json:"medium"`
+	EpisodeCount           int                         `json:"episodeCount"`
+	ImageUrlHash           float64                     `json:"imageUrlHash"`
+	NewestItemPubdate      float32                     `json:"newestItemPubdate"`
+	Transcripts            []PodcastTranscriptsDetails `json:"transcripts"`
+}
+
+type PodcastTranscriptsDetails struct {
+	Url  string                 `json:"url"`
+	Type PodcastTranscriptsType `json:"type"`
+}
+
+type PodcastTranscriptsType string
+
+// Define constants of the custom type
+const (
+	TextHTML       PodcastTranscriptsType = "text/html"
+	ApplicationSRT PodcastTranscriptsType = "application/srt"
+	ApplicationVTT PodcastTranscriptsType = "application/vtt"
+)
+
+type PodcastSearchAPIResponse struct {
+	Items       []PodcastAPIResponseItem `json:"feeds"`
+	Status      string                   `json:"status"`
+	Count       int                      `json:"count"`
+	Query       string                   `json:"query"`
+	Description string                   `json:"description"`
+}
+
 // CONSTANTS
 
 const redis_password = ""
@@ -89,6 +199,7 @@ const redis_db = 0
 const feed_prefix = "feed:"
 const metaData_prefix = "metaData:"
 const readerView_prefix = "readerViewContent:"
+const feedsearch_prefix = "feedsearch:"
 
 // const redis_feedsItems_key = "feedsItems"
 // const redis_feedDetails_key = "feedDetails"
