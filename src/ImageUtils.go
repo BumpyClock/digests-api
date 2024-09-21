@@ -12,7 +12,6 @@ import (
 	"time"
 
 	link2json "github.com/BumpyClock/go-link2json"
-	"github.com/disintegration/imaging"
 	"golang.org/x/net/html"
 
 	"github.com/EdlinOrg/prominentcolor"
@@ -113,55 +112,88 @@ func (tf *ThumbnailFinder) fetchImageFromSource(pageURL string) (string, error) 
 	}
 	return "", nil
 }
-
 func extractColorFromThumbnail_prominentColor(url string) (r, g, b uint8) {
 	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Recovered from panic while processing URL %s: %v", url, r)
+		if rec := recover(); rec != nil {
+			log.Printf("Recovered from panic while processing URL %s: %v", url, rec)
 			r, g, b = 128, 128, 128
+			cacheDefaultColor(url)
 		}
 	}()
 
 	if url == "" {
 		return 128, 128, 128 // RGB values for gray
 	}
+	cachePrefix := "thumbnailColor_"
+	var cachedColor RGBColor
+
+	if err := cache.Get(cachePrefix, url, &cachedColor); err == nil {
+		log.Printf("[extractColorFromThumbnail_prominentColor] Found cached color for %s : %v", url, cachedColor)
+		return cachedColor.R, cachedColor.G, cachedColor.B
+	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
+		log.Printf("Error creating request for prominentColor: %v", err)
+		cacheDefaultColor(url)
 		return 128, 128, 128
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		cacheDefaultColor(url)
 		return 128, 128, 128
 	}
 	defer resp.Body.Close()
 
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
+		cacheDefaultColor(url)
 		return 128, 128, 128
 	}
+	log.Printf("Starting color extraction for %s", url)
 
-	resizedImage := imaging.Resize(img, 100, 0, imaging.Lanczos)
-
+	resizedImage := img
 	bounds := resizedImage.Bounds()
 	imgNRGBA := image.NewNRGBA(bounds)
 	draw.Draw(imgNRGBA, bounds, resizedImage, bounds.Min, draw.Src)
 
 	if imgNRGBA == nil {
 		log.Printf("imgNRGBA is nil for URL %s", url)
-	}
-
-	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
-	if err != nil || len(colors) == 0 {
+		cacheDefaultColor(url)
 		return 128, 128, 128
 	}
 
+	// Try extracting colors with the background mask
+	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
+	if err != nil || len(colors) == 0 {
+		log.Println("Error extracting prominent color with background mask: ", err)
+		// Retry without the background mask
+		colors, err = prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, nil)
+		if err != nil || len(colors) == 0 {
+			log.Println("Error extracting prominent color without background mask: ", err)
+			cacheDefaultColor(url)
+			return 128, 128, 128
+		}
+	}
+
 	if len(colors) > 0 {
+		if err := cache.Set(cachePrefix, url, colors[0].Color, 24*time.Hour); err != nil {
+			log.Printf("[extractColorFromThumbnail_prominentColor] Failed to cache thumbnailColor for %s: %v", url, err)
+		}
 		return uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)
 	}
 
+	cacheDefaultColor(url)
 	return 128, 128, 128
+}
+
+func cacheDefaultColor(url string) {
+	cachePrefix := "thumbnailColor_"
+	defaultColor := RGBColor{128, 128, 128}
+	if err := cache.Set(cachePrefix, url, defaultColor, 24*time.Hour); err != nil {
+		log.Printf("[extractColorFromThumbnail_prominentColor] Failed to cache default color for %s: %v", url, err)
+	}
 }
 
 func DiscoverFavicon(pageURL string) string {

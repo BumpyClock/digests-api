@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 
 	_ "image/gif"
 	_ "image/jpeg"
@@ -103,10 +104,16 @@ func processURLs(urls []string) []FeedResponse {
 	responses := make(chan FeedResponse, len(urls))
 	var wg sync.WaitGroup
 
+	sem := make(chan struct{}, numWorkers)
+
 	for _, url := range urls {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(url string) {
-			defer wg.Done()
+			defer func() {
+				wg.Done()
+				<-sem
+			}()
 			response := processURL(url)
 			responses <- response
 		}(url)
@@ -146,7 +153,7 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 		return FeedResponse{}, err
 	}
 
-	feedItems := processFeedItems(feed.Items)
+	feedItems := processFeedItems(feed)
 	// favicon := getFavicon(feed)
 	baseDomain := getBaseDomain(feed.Link)
 	addURLToList(url)
@@ -195,7 +202,7 @@ func processURL(url string) FeedResponse {
 		url = strings.Replace(url, "http://", "https://", 1)
 	}
 
-	cacheKey := createHash(url)
+	cacheKey := url
 
 	var cachedFeed FeedResponse
 	err := cache.Get(feed_prefix, cacheKey, &cachedFeed)
@@ -247,16 +254,60 @@ func processURL(url string) FeedResponse {
 	return response
 }
 
-func processFeedItems(items []*gofeed.Item) []FeedResponseItem {
+func processFeedItems_singleThreaded(feed *gofeed.Feed) []FeedResponseItem {
+	log.Println("Processing feed items for feed:", feed.Title)
+	thumbnail := ""
+	thumbnailColor := RGBColor{128, 128, 128}
+
+	items := feed.Items
+
+	if (feed.ITunesExt != nil) && (feed.ITunesExt.Image != "") {
+		thumbnail = feed.ITunesExt.Image
+		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
+		thumbnailColor = RGBColor{r, g, b}
+	}
+
+	itemResponses := make(chan FeedResponseItem, len(items))
+	var itemWg sync.WaitGroup
+
+	itemWg.Add(1)
+	go func() {
+		defer itemWg.Done()
+		for _, item := range items {
+			itemResponse := processFeedItem(item, thumbnail, thumbnailColor)
+			itemResponses <- itemResponse
+		}
+		close(itemResponses)
+	}()
+
+	itemWg.Wait()
+	return collectItemResponses(itemResponses)
+}
+
+func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
+	thumbnail := ""
+	thumbnailColor := RGBColor{128, 128, 128}
+
+	items := feed.Items
+
+	if (feed.ITunesExt != nil) && (feed.ITunesExt.Image != "") {
+		thumbnail = feed.ITunesExt.Image
+		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
+		thumbnailColor = RGBColor{r, g, b}
+
+	}
+
+	sem := make(chan struct{}, numWorkers)
 
 	itemResponses := make(chan FeedResponseItem, len(items))
 	var itemWg sync.WaitGroup
 
 	for _, item := range items {
 		itemWg.Add(1)
+		sem <- struct{}{}
 		go func(item *gofeed.Item) {
-			defer itemWg.Done()
-			itemResponse := processFeedItem(item)
+			defer func() { itemWg.Done(); <-sem }()
+			itemResponse := processFeedItem(item, thumbnail, thumbnailColor)
 			itemResponses <- itemResponse
 		}(item)
 	}
@@ -269,8 +320,10 @@ func processFeedItems(items []*gofeed.Item) []FeedResponseItem {
 	return collectItemResponses(itemResponses)
 }
 
-func processFeedItem(item *gofeed.Item) FeedResponseItem {
+func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColor) FeedResponseItem {
 	cacheKey := createHash(item.Link)
+	Link := item.Link
+	Duration := 0
 	metaData := link2json.MetaDataResponseItem{}
 	if cache.Get(metaData_prefix, cacheKey, &metaData) == nil {
 		log.Printf("Loaded metadata from cache for %s", item.Link)
@@ -281,13 +334,20 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 		author = item.Author.Name
 	}
 
+	if (item.ITunesExt != nil) && (item.ITunesExt.Author != "") {
+		author = item.ITunesExt.Author
+	}
+
 	categories := strings.Join(item.Categories, ", ")
 
-	thumbnail := ""
 	if len(item.Enclosures) > 0 {
 		if item.Enclosures[0].URL != "" && item.Enclosures[0].Type == "image/jpeg" {
 			thumbnail = item.Enclosures[0].URL // Use the first enclosure as the thumbnail
 		}
+	}
+
+	if (thumbnail == "") && (item.Image != nil) {
+		thumbnail = item.Image.URL
 	}
 
 	if item.ITunesExt != nil {
@@ -361,7 +421,6 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 		}
 	}
 
-	thumbnailColor := RGBColor{128, 128, 128}
 	if thumbnail != "" {
 		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
 		thumbnailColor = RGBColor{r, g, b}
@@ -381,27 +440,74 @@ func processFeedItem(item *gofeed.Item) FeedResponseItem {
 	standardizedPublished := standardizeDate(item.Published)
 	var itemType string
 	if item.ITunesExt != nil {
+		if (item.Enclosures != nil) && (len(item.Enclosures) > 0) {
+			if item.Enclosures[0].Type == "audio/mpeg" {
+				Link = item.Enclosures[0].URL
+			}
+			if item.ITunesExt != nil && item.ITunesExt.Duration != "" {
+				durationStr := item.ITunesExt.Duration
+
+				// Try parsing as integer (if duration is in seconds)
+				durationInt, err := strconv.Atoi(durationStr)
+				if err != nil {
+					// If the duration is not in seconds, try parsing it as HH:MM:SS
+					parts := strings.Split(durationStr, ":")
+					if len(parts) == 3 { // HH:MM:SS format
+						hours, _ := strconv.Atoi(parts[0])
+						minutes, _ := strconv.Atoi(parts[1])
+						seconds, _ := strconv.Atoi(parts[2])
+						durationInt = (hours * 3600) + (minutes * 60) + seconds
+					} else if len(parts) == 2 { // MM:SS format
+						minutes, _ := strconv.Atoi(parts[0])
+						seconds, _ := strconv.Atoi(parts[1])
+						durationInt = (minutes * 60) + seconds
+					}
+				}
+
+				Duration = durationInt
+			}
+
+		}
 		itemType = "podcast"
+		//return item with podcast Details
+		return FeedResponseItem{
+			Type:            itemType,
+			ID:              item.GUID,
+			Title:           item.Title,
+			Description:     description,
+			Link:            Link,
+			Duration:        Duration,
+			Author:          author,
+			Published:       standardizedPublished,
+			Created:         standardizedPublished,
+			Content:         parsedContent,
+			Content_Encoded: item.Content,
+			Categories:      categories,
+			Enclosures:      item.Enclosures,
+			Thumbnail:       thumbnail,
+			ThumbnailColor:  thumbnailColor,
+		}
 	} else {
 		itemType = "article"
+		return FeedResponseItem{
+			Type:            itemType,
+			ID:              item.GUID,
+			Title:           item.Title,
+			Description:     description,
+			Link:            Link,
+			Author:          author,
+			Published:       standardizedPublished,
+			Created:         standardizedPublished,
+			Content:         parsedContent,
+			Content_Encoded: item.Content,
+			Categories:      categories,
+			Enclosures:      item.Enclosures,
+			Thumbnail:       thumbnail,
+			ThumbnailColor:  thumbnailColor,
+		}
+
 	}
 
-	return FeedResponseItem{
-		Type:            itemType,
-		ID:              item.GUID,
-		Title:           item.Title,
-		Description:     description,
-		Link:            item.Link,
-		Author:          author,
-		Published:       standardizedPublished,
-		Created:         standardizedPublished,
-		Content:         parsedContent,
-		Content_Encoded: item.Content,
-		Categories:      categories,
-		Enclosures:      item.Enclosures,
-		Thumbnail:       thumbnail,
-		ThumbnailColor:  thumbnailColor,
-	}
 }
 
 func standardizeDate(dateStr string) string {
@@ -439,8 +545,27 @@ func standardizeDate(dateStr string) string {
 
 func createFeedResponse(feed *gofeed.Feed, url string, metaData link2json.MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
 	var feedType string
+	var thumbnail string
+
+	if feed == nil {
+		log.Println("createFeedResponse: feed is nil for", url)
+		return FeedResponse{}
+	}
+
+	if metaData.Favicon == "" {
+
+		if feed.Image != nil && feed.Image.URL != "" {
+			thumbnail = feed.Image.URL
+		}
+	} else {
+		thumbnail = metaData.Favicon
+	}
+
 	if feed.ITunesExt != nil {
 		feedType = "podcast"
+		if feed.Image != nil {
+			thumbnail = feed.Image.URL
+		}
 	} else {
 		feedType = "article"
 	}
@@ -464,7 +589,7 @@ func createFeedResponse(feed *gofeed.Feed, url string, metaData link2json.MetaDa
 		Published:     feed.Published,
 		Author:        feed.Author,
 		Language:      feed.Language,
-		Favicon:       metaData.Favicon,
+		Favicon:       thumbnail,
 		Categories:    strings.Join(feed.Categories, ", "),
 		Items:         &feedItems,
 	}
