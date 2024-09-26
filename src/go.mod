@@ -5,7 +5,7 @@ go 1.23
 toolchain go1.23.1
 
 require (
-	github.com/BumpyClock/go-link2json v1.0.4
+	github.com/BumpyClock/go-link2json v1.0.5
 	github.com/EdlinOrg/prominentcolor v1.0.0
 	github.com/PuerkitoBio/goquery v1.10.0
 	github.com/disintegration/imaging v1.6.2
@@ -64,4 +64,3 @@ require (
 	kilobit.ca/go/objected v0.0.2 // indirect
 	kilobit.ca/go/podcastindex v0.0.3 // indirect
 )
-

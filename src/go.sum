@@ -4,6 +4,8 @@ github.com/BumpyClock/go-link2json v1.0.3 h1:d5dUxyjbcJMg/dIEMyO7hU+y0RLSdLmH1/4
 github.com/BumpyClock/go-link2json v1.0.3/go.mod h1:QB+dLF6hXt+nwyE3R8QxeGAVjXRx+WAGP0LEYmyXTww=
 github.com/BumpyClock/go-link2json v1.0.4 h1:sdLWGwVK7WDQG1pUedPcxW+482t/J8bstu/ORmQykUY=
 github.com/BumpyClock/go-link2json v1.0.4/go.mod h1:QB+dLF6hXt+nwyE3R8QxeGAVjXRx+WAGP0LEYmyXTww=
+github.com/BumpyClock/go-link2json v1.0.5 h1:/AJ+7n+pmcTF5spW/WAJnVPGn4LM4bVAjv//ZD//6A8=
+github.com/BumpyClock/go-link2json v1.0.5/go.mod h1:I1lvaLzN2xwv3iCXduMAUhYAevTJ7O0B4oah74DLnuI=
 github.com/EdlinOrg/prominentcolor v1.0.0 h1:sQNY8Dtsv3PK3J1LbmrDmtlZm9Y9U8Loi1iZIl4YN3Y=
 github.com/EdlinOrg/prominentcolor v1.0.0/go.mod h1:mYmDsxfcmBz6izH/SqtSzfsUiZdPNPpPgUPKCZq70KQ=
 github.com/PuerkitoBio/goquery v1.9.2 h1:4/wZksC3KgkQw7SQgkKotmKljk0M6V8TUvA8Wb4yPeE=
