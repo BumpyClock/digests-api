@@ -5,10 +5,9 @@ go 1.23
 toolchain go1.23.1
 
 require (
-	github.com/BumpyClock/go-link2json v1.0.5
+	github.com/BumpyClock/go-link2json v1.0.8
 	github.com/EdlinOrg/prominentcolor v1.0.0
 	github.com/PuerkitoBio/goquery v1.10.0
-	github.com/disintegration/imaging v1.6.2
 	github.com/go-shiori/go-readability v0.0.0-20240923125239-59a7bd165825
 	github.com/jinzhu/copier v0.4.0
 	github.com/mmcdole/gofeed v1.3.0
@@ -27,7 +26,6 @@ require (
 	github.com/antchfx/xmlquery v1.4.1 // indirect
 	github.com/antchfx/xpath v1.3.1 // indirect
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
-	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/chromedp/cdproto v0.0.0-20240919203636-12af5e8a671f // indirect
 	github.com/chromedp/chromedp v0.10.0 // indirect
@@ -56,11 +54,10 @@ require (
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
 	github.com/temoto/robotstxt v1.1.2 // indirect
-	golang.org/x/image v0.20.0 // indirect
 	golang.org/x/sys v0.25.0 // indirect
 	golang.org/x/text v0.18.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
-	kilobit.ca/go/objected v0.0.2 // indirect
-	kilobit.ca/go/podcastindex v0.0.3 // indirect
 )
+
+// replace github.com/BumpyClock/go-link2json => ../../go-link2json
