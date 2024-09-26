@@ -4,6 +4,16 @@ FROM golang:latest
 # Add Maintainer Info
 LABEL maintainer="Aditya Sharma <aditya@adityasharma.net>"
 
+# Install chrome dependencies
+RUN apt-get update && apt-get install -y libnss3 libatk-bridge2.0-0 libgtk-3-0 libx11-xcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 fonts-liberation libappindicator3-1 libasound2
+
+# Install necessary packages
+RUN wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb    && apt install -y ./google-chrome-stable_current_amd64.deb  && rm -rf /var/lib/apt/lists/*
+
+
+# Set environment variables for Chromium
+ENV CHROMEDP_EXEC_PATH=/usr/bin/chromium-browser
+
 # Set the Current Working Directory inside the container
 WORKDIR /app
 
