@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math/rand"
 	"sort"
 	"strconv"
 
@@ -29,9 +30,20 @@ var httpClient = &http.Client{Timeout: 20 * time.Second}
 
 const layout = "2006-01-02T15:04:05Z07:00"
 
+// func createHash(s string) string {
+// 	hash := sha256.Sum256([]byte(s))
+// 	return hex.EncodeToString(hash[:])
+// }
+
 func createHash(s string) string {
-	hash := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(hash[:])
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	randomNumber := r.Intn(1000000) // Generate a random number
+	randomNumberStr := strconv.Itoa(randomNumber)
+
+	combinedString := randomNumberStr + s
+	hash := sha256.Sum256([]byte(combinedString))
+
+	return randomNumberStr + hex.EncodeToString(hash[:])
 }
 
 func parseHTMLContent(htmlContent string) string {

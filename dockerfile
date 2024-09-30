@@ -4,6 +4,30 @@ FROM golang:latest
 # Add Maintainer Info
 LABEL maintainer="Aditya Sharma <aditya@adityasharma.net>"
 
+# Install necessary packages
+RUN apt-get update && apt-get install -y \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libgtk-3-0 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libxss1 \
+    libxtst6 \
+    fonts-liberation \
+    libappindicator3-1 \
+    libasound2 \
+    chromium
+
+# Set environment variables for Chromium
+ENV CHROMEDP_EXEC_PATH=/usr/bin/chromium
+
 # Set the Current Working Directory inside the container
 WORKDIR /app
 
@@ -17,7 +41,6 @@ RUN go mod download
 COPY src/ .
 
 # Build the Go app
-# RUN go build -o main .
 RUN GOOS=linux GOARCH=amd64 go build -o main .
 
 # Expose port 8080 to the outside world
