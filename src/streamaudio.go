@@ -127,7 +127,7 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 			},
 			// Select the type of audio file you want returned.
 			AudioConfig: &texttospeechpb.AudioConfig{
-				AudioEncoding: *texttospeechpb.AudioEncoding_OGG_OPUS.Enum(),
+				AudioEncoding: *texttospeechpb.AudioEncoding_MP3.Enum(),
 			},
 		}
 		// Perform the text-to-speech request
