@@ -1,8 +1,1 @@
-# Build the Docker image
-docker buildx build -t digests-api .
-
-# Tag the Docker image
-docker tag digests-api bumpyclock/digests-api:latest
-
-# Push the Docker image to the repository
-docker push bumpyclock/digests-api:latest
+docker buildx build --platform linux/amd64,linux/arm64 -t bumpyclock/digests-api:latest --push --progress=plain .

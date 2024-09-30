@@ -14,6 +14,9 @@ RUN wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.d
 # Set environment variables for Chromium
 ENV CHROMEDP_EXEC_PATH=/usr/bin/chromium-browser
 
+ENV GOOGLE_APPLICATION_CREDENTIALS=/credentials/credentials.json
+
+
 # Set the Current Working Directory inside the container
 WORKDIR /app
 
