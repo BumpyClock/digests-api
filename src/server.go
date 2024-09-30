@@ -18,8 +18,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var limiter = rate.NewLimiter(1, 3) // Allow 1 request per second with a burst of 3 requests
-var cache digestsCache.Cache        // Use the Cache interface
+var limiter = rate.NewLimiter(5, 15) // Allow 1 request per second with a burst of 3 requests
+var cache digestsCache.Cache         // Use the Cache interface
 var cacheErr error
 var log = logrus.New()
 var urlList []string

@@ -1,14 +1,53 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync"
 
 	texttospeech "cloud.google.com/go/texttospeech/apiv1"
 	"cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
 )
+
+var (
+	ttsClient *texttospeech.Client
+	once      sync.Once
+)
+
+func initTTSClient() {
+	var err error
+	ttsClient, err = texttospeech.NewClient(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to create TTS client: %v", err)
+	}
+}
+
+func splitTextIntoChunks(text string, maxChunkSize int) []string {
+	var chunks []string
+	words := strings.Fields(text)
+	var chunk string
+
+	for _, word := range words {
+		if len(chunk)+len(word)+1 > maxChunkSize {
+			chunks = append(chunks, chunk)
+			chunk = word
+		} else {
+			if chunk != "" {
+				chunk += " "
+			}
+			chunk += word
+		}
+	}
+	if chunk != "" {
+		chunks = append(chunks, chunk)
+	}
+
+	return chunks
+}
 
 func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 	log.Print("Received request to stream audio")
@@ -32,65 +71,54 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create context and client
-	ctx := context.Background()
+	// Initialize the TTS client once
+	once.Do(initTTSClient)
 
-	client, err := texttospeech.NewClient(ctx)
-	if err != nil {
-		log.Printf("Failed to create TTS client: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	defer client.Close()
-	log.Print("TTS client created")
 	log.Print("Text to be synthesized: ", ttsReq.Text)
+	const maxChunkSize = 1000
 
-	// req := texttospeechpb.SynthesizeSpeechRequest{
-	// 	Input: &texttospeechpb.SynthesisInput{
-	// 		InputSource: &texttospeechpb.SynthesisInput_Text{Text: ttsReq.Text},
-	// 	},
+	// Split text into chunks of up to 1000 characters
+	chunks := splitTextIntoChunks(ttsReq.Text, maxChunkSize)
 
-	// 	Voice: &texttospeechpb.VoiceSelectionParams{
-	// 		LanguageCode: "en-US",
-	// 		SsmlGender:   texttospeechpb.SsmlVoiceGender_NEUTRAL,
-	// 	},
-	// 	// Select the type of audio file you want returned.
-	// 	AudioConfig: &texttospeechpb.AudioConfig{
-	// 		AudioEncoding: texttospeechpb.AudioEncoding_MP3,
-	// 	},
-	// }
-	req := texttospeechpb.SynthesizeSpeechRequest{
-		// Set the text input to be synthesized.
-		Input: &texttospeechpb.SynthesisInput{
-			InputSource: &texttospeechpb.SynthesisInput_Text{Text: "Hello, World!"},
-		},
-		// Build the voice request, select the language code ("en-US") and the SSML
-		// voice gender ("neutral").
-		Voice: &texttospeechpb.VoiceSelectionParams{
-			LanguageCode: "en-US",
-			SsmlGender:   texttospeechpb.SsmlVoiceGender_NEUTRAL,
-		},
-		// Select the type of audio file you want returned.
-		AudioConfig: &texttospeechpb.AudioConfig{
-			AudioEncoding: texttospeechpb.AudioEncoding_MP3,
-		},
-	}
-	// Perform the text-to-speech request
-	resp, err := client.SynthesizeSpeech(ctx, &req)
-	if err != nil {
-		log.Printf("Failed to synthesize speech: %v", err)
-		http.Error(w, "Failed to synthesize speech", http.StatusInternalServerError)
-		return
-	} else {
-		log.Print("Speech synthesized successfully")
+	var audioContent bytes.Buffer
+
+	for _, chunk := range chunks {
+		req := texttospeechpb.SynthesizeSpeechRequest{
+			// Set the text input to be synthesized.
+			Input: &texttospeechpb.SynthesisInput{
+				InputSource: &texttospeechpb.SynthesisInput_Text{Text: chunk},
+			},
+			// Build the voice request, select the language code ("en-US") and the SSML
+			// voice gender ("neutral").
+			Voice: &texttospeechpb.VoiceSelectionParams{
+				LanguageCode: "en-US",
+				Name:         "en-US-Neural2-I",
+			},
+			// Select the type of audio file you want returned.
+			AudioConfig: &texttospeechpb.AudioConfig{
+				AudioEncoding: texttospeechpb.AudioEncoding_MP3,
+			},
+		}
+		// Perform the text-to-speech request
+		resp, err := ttsClient.SynthesizeSpeech(context.Background(), &req)
+		if err != nil {
+			log.Printf("Failed to synthesize speech: %v", err)
+			http.Error(w, "Failed to synthesize speech", http.StatusInternalServerError)
+			return
+		} else {
+			log.Print("Speech synthesized successfully")
+		}
+
+		// Append the audio content to the buffer
+		audioContent.Write(resp.AudioContent)
 	}
 
 	// Set the headers and write the audio content to the response
 	w.Header().Set("Content-Type", "audio/mpeg")
-	w.Header().Set("Content-Length", fmt.Sprint(len(resp.AudioContent)))
+	w.Header().Set("Content-Length", fmt.Sprint(audioContent.Len()))
 
 	// Write the audio content to the response
-	_, err = w.Write(resp.AudioContent)
+	_, err = w.Write(audioContent.Bytes())
 	if err != nil {
 		log.Printf("Failed to write audio content to response: %v", err)
 	}
