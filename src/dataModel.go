@@ -200,6 +200,7 @@ type TTSRequest struct {
 	LanguageCode string `json:"languageCode"`
 	SsmlGender   string `json:"ssmlGender"`
 	VoiceName    string `json:"voiceName"`
+	Url          string `json:"url"`
 }
 
 // CONSTANTS
@@ -210,6 +211,7 @@ const feed_prefix = "feed:"
 const metaData_prefix = "metaData:"
 const readerView_prefix = "readerViewContent:"
 const feedsearch_prefix = "feedsearch:"
+const audio_prefix = "tts:"
 
 // const redis_feedsItems_key = "feedsItems"
 // const redis_feedDetails_key = "feedDetails"
