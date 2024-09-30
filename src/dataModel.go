@@ -195,6 +195,13 @@ type PodcastSearchAPIResponse struct {
 	Description string                   `json:"description"`
 }
 
+type TTSRequest struct {
+	Text         string `json:"text"`
+	LanguageCode string `json:"languageCode"`
+	SsmlGender   string `json:"ssmlGender"`
+	VoiceName    string `json:"voiceName"`
+}
+
 // CONSTANTS
 
 const redis_password = ""
