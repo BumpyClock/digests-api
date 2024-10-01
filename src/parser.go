@@ -582,7 +582,7 @@ func createFeedResponse(feed *gofeed.Feed, url string, metaData link2json.MetaDa
 		feedType = "article"
 	}
 
-	SiteTitle := metaData.Title
+	SiteTitle := metaData.Sitename
 	if SiteTitle == "" {
 		SiteTitle = feed.Title
 	}
