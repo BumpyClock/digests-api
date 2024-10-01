@@ -28,6 +28,9 @@ RUN apt-get update && apt-get install -y \
 # Set environment variables for Chromium
 ENV CHROMEDP_EXEC_PATH=/usr/bin/chromium
 
+ENV GOOGLE_APPLICATION_CREDENTIALS=/credentials/credentials.json
+
+
 # Set the Current Working Directory inside the container
 WORKDIR /app
 

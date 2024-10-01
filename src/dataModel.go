@@ -195,6 +195,14 @@ type PodcastSearchAPIResponse struct {
 	Description string                   `json:"description"`
 }
 
+type TTSRequest struct {
+	Text         string `json:"text"`
+	LanguageCode string `json:"languageCode"`
+	SsmlGender   string `json:"ssmlGender"`
+	VoiceName    string `json:"voiceName"`
+	Url          string `json:"url"`
+}
+
 // CONSTANTS
 
 const redis_password = ""
@@ -203,6 +211,9 @@ const feed_prefix = "feed:"
 const metaData_prefix = "metaData:"
 const readerView_prefix = "readerViewContent:"
 const feedsearch_prefix = "feedsearch:"
+
+const audio_prefix = "tts:"
+
 const DefaultRed = uint8(128)
 const DefaultGreen = uint8(128)
 const DefaultBlue = uint8(128)
@@ -210,6 +221,7 @@ const DefaultBlue = uint8(128)
 // const thumbnailColorPrefix = "thumbnailColor_"
 
 // var colorComputeSemaphore = make(chan struct{}, numWorkers)
+
 
 // const redis_feedsItems_key = "feedsItems"
 // const redis_feedDetails_key = "feedDetails"
