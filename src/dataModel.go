@@ -211,6 +211,7 @@ const feed_prefix = "feed:"
 const metaData_prefix = "metaData:"
 const readerView_prefix = "readerViewContent:"
 const feedsearch_prefix = "feedsearch:"
+const thumbnailColor_prefix = "thumbnailColor:"
 
 const audio_prefix = "tts:"
 
@@ -221,7 +222,6 @@ const DefaultBlue = uint8(128)
 // const thumbnailColorPrefix = "thumbnailColor_"
 
 // var colorComputeSemaphore = make(chan struct{}, numWorkers)
-
 
 // const redis_feedsItems_key = "feedsItems"
 // const redis_feedDetails_key = "feedDetails"

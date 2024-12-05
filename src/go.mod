@@ -10,7 +10,6 @@ require (
 	github.com/EdlinOrg/prominentcolor v1.0.0
 	github.com/PuerkitoBio/goquery v1.10.0
 	github.com/go-shiori/go-readability v0.0.0-20240923125239-59a7bd165825
-	github.com/jinzhu/copier v0.4.0
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/nitishm/go-rejson/v4 v4.2.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible

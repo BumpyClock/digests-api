@@ -1,21 +1,15 @@
+// parser.go
 package main
 
 import (
-	"encoding/json"
-	"math/rand"
-	"net"
-	"sort"
-	"strconv"
-
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
-
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
-	URL "net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,29 +17,20 @@ import (
 	"golang.org/x/net/html"
 
 	link2json "github.com/BumpyClock/go-link2json"
-	"github.com/jinzhu/copier"
 	"github.com/mmcdole/gofeed"
 	"github.com/sirupsen/logrus"
 )
 
-var httpClient = &http.Client{Timeout: 20 * time.Second}
+var (
+	httpClient = &http.Client{Timeout: 20 * time.Second}
+	cacheMutex = &sync.Mutex{}
+)
 
 const layout = "2006-01-02T15:04:05Z07:00"
 
-// func createHash(s string) string {
-// 	hash := sha256.Sum256([]byte(s))
-// 	return hex.EncodeToString(hash[:])
-// }
-
 func createHash(s string) string {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	randomNumber := r.Intn(1000000) // Generate a random number
-	randomNumberStr := strconv.Itoa(randomNumber)
-
-	combinedString := randomNumberStr + s
-	hash := sha256.Sum256([]byte(combinedString))
-
-	return randomNumberStr + hex.EncodeToString(hash[:])
+	hash := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(hash[:])
 }
 
 func parseHTMLContent(htmlContent string) string {
@@ -69,42 +54,28 @@ func parseHTMLContent(htmlContent string) string {
 	return textContent.String()
 }
 
-// func isGUID(s string) bool {
-// 	// Check if s is a URL
-// 	_, err := URL.ParseRequestURI(s)
-// 	if err == nil {
-// 		// s is a URL, so it's not a GUID
-// 		return false
-// 	}
-
-// 	// If it's not a URL, we assume it's a GUID
-// 	return true
-// }
-
-func getBaseDomain(url string) string {
-	parsedURL, err := URL.Parse(url)
+func getBaseDomain(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
+		log.Printf("Failed to parse URL %s: %v", rawURL, err)
 		return ""
 	}
-
 	return parsedURL.Scheme + "://" + parsedURL.Host
 }
 
-// parseHandler processes the POST request to parse specified feed URLs and return detailed feed information.
 func parseHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
+	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	req, err := decodeRequest(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	responses := processURLs(req.URLs)
-
 	sendResponse(w, responses)
 }
 
@@ -115,10 +86,9 @@ func decodeRequest(r *http.Request) (ParseRequest, error) {
 }
 
 func processURLs(urls []string) []FeedResponse {
-	responses := make(chan FeedResponse, len(urls))
 	var wg sync.WaitGroup
-
 	sem := make(chan struct{}, numWorkers)
+	responses := make(chan FeedResponse, len(urls))
 
 	for _, url := range urls {
 		wg.Add(1)
@@ -151,41 +121,40 @@ func isCacheStale(lastRefreshed string) bool {
 	if time.Since(parsedTime) > time.Duration(refresh_timer)*time.Minute {
 		log.Println("[Cache Stale] Cache is stale")
 		return true
-	} else {
-		return false
 	}
+	return false
 }
 
-func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
+func fetchAndCacheFeed(feedURL string, cacheKey string) (FeedResponse, error) {
 	parser := gofeed.NewParser()
-	feed, err := parser.ParseURL(url)
+	feed, err := parser.ParseURL(feedURL)
 	if err != nil {
 		log.WithFields(logrus.Fields{
-			"url":   url,
+			"url":   feedURL,
 			"error": err,
 		}).Error("Failed to parse URL")
 		return FeedResponse{}, err
 	}
 
 	feedItems := processFeedItems(feed)
-	// favicon := getFavicon(feed)
 	baseDomain := getBaseDomain(feed.Link)
-	addURLToList(url)
+	addURLToList(feedURL)
 
-	basedomainCacheKey := createHash(baseDomain)
-	var metaData = link2json.MetaDataResponseItem{}
+	baseDomainCacheKey := createHash(baseDomain)
+	var metaData link2json.MetaDataResponseItem
 
-	if err := cache.Get(metaData_prefix, basedomainCacheKey, &metaData); err != nil {
-		if IsUrl(baseDomain) {
-			tempmetaData, err := GetMetaData(baseDomain)
+	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
+
+	if err := cache.Get(metaData_prefix, baseDomainCacheKey, &metaData); err != nil {
+		if isValidURL(baseDomain) {
+			tempMetaData, err := GetMetaData(baseDomain)
 			if err != nil {
 				log.Printf("Failed to get metadata for %s: %v", baseDomain, err)
 			} else {
-				if err := cache.Set(metaData_prefix, cacheKey, metaData, 24*time.Hour); err != nil {
-					metaData = tempmetaData
-					log.Printf("Added metaData to cache metadata for %s: %v", baseDomain, err)
-				} else {
-					metaData = tempmetaData
+				metaData = tempMetaData
+				if err := cache.Set(metaData_prefix, baseDomainCacheKey, metaData, 24*time.Hour); err != nil {
+					log.Printf("Failed to cache metadata for %s: %v", baseDomain, err)
 				}
 			}
 		} else {
@@ -194,76 +163,70 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 		}
 	} else {
 		log.Printf("Loaded metadata from cache for %s", baseDomain)
-
 	}
 
-	response := createFeedResponse(feed, url, metaData, feedItems)
+	response := createFeedResponse(feed, feedURL, metaData, feedItems)
 
-	// Cache the new feed details and items
 	if err := cache.Set(feed_prefix, cacheKey, response, 24*time.Hour); err != nil {
 		log.WithFields(logrus.Fields{
-			"url":   url,
+			"url":   feedURL,
 			"error": err,
 		}).Error("Failed to cache feed details")
 		return FeedResponse{}, err
 	}
 
-	log.Infof("Successfully cached feed details for %s", url)
-
+	log.Infof("Successfully cached feed details for %s", feedURL)
 	return response, nil
 }
 
-func processURL(url string) FeedResponse {
-	// make sure the url starts with https:// or http:// if it starts with http:// then convert to https://
-	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
-		url = "https://" + url
-	} else if strings.HasPrefix(url, "http://") {
-		url = strings.Replace(url, "http://", "https://", 1)
-	}
-
-	cacheKey := url
+func processURL(rawURL string) FeedResponse {
+	feedURL := sanitizeURL(rawURL)
+	cacheKey := feedURL
 
 	var cachedFeed FeedResponse
 	err := cache.Get(feed_prefix, cacheKey, &cachedFeed)
+
 	if err == nil && cachedFeed.SiteTitle != "" {
 		log.WithFields(logrus.Fields{
-			"url": url,
+			"url": feedURL,
 		}).Info("[Cache Hit] Using cached feed details")
-		// cachedFeed.LastRefreshed is older than 15 minutes the cache is stale and we should refresh it
+
 		if isCacheStale(cachedFeed.LastRefreshed) {
 			log.WithFields(logrus.Fields{
-				"url": url,
-			}).Info("[Cache Stale] for")
+				"url": feedURL,
+			}).Info("[Cache Stale] Cache is stale, refreshing")
+
 			go func() {
-				_, err := fetchAndCacheFeed(url, cacheKey)
+				_, err := fetchAndCacheFeed(feedURL, cacheKey)
 				if err != nil {
 					log.WithFields(logrus.Fields{
-						"url":   url,
+						"url":   feedURL,
 						"error": err,
 					}).Error("Failed to refresh feed")
 				}
 			}()
-		} else {
-			log.WithFields(logrus.Fields{
-				"url": url,
-			}).Info("[Cache Hit] Cache is fresh")
 		}
+
+		// Reprocess feed items to update thumbnail colors
+		updatedItems := updateFeedItemsWithThumbnailColors(cachedFeed.Items)
+		cachedFeed.Items = &updatedItems
+
 		return cachedFeed
 	} else {
 		log.WithFields(logrus.Fields{
-			"url": url,
+			"url": feedURL,
 		}).Info("[Cache Miss] Cache miss")
 	}
 
-	response, err := fetchAndCacheFeed(url, cacheKey)
+	response, err := fetchAndCacheFeed(feedURL, cacheKey)
 	if err != nil {
 		log.WithFields(logrus.Fields{
-			"url":   url,
+			"url":   feedURL,
 			"error": err,
 		}).Error("Failed to fetch and cache feed")
 		return FeedResponse{
 			Type:    "unknown",
-			FeedUrl: url,
+			FeedUrl: feedURL,
 			GUID:    cacheKey,
 			Status:  "error",
 			Error:   err,
@@ -272,67 +235,63 @@ func processURL(url string) FeedResponse {
 
 	return response
 }
+func updateFeedItemsWithThumbnailColors(items *[]FeedResponseItem) []FeedResponseItem {
+	var updatedItems []FeedResponseItem
+	for _, item := range *items {
+		// Update the thumbnail color for each item
+		updatedItem := updateThumbnailColorForItem(item)
+		updatedItems = append(updatedItems, updatedItem)
+	}
+	return updatedItems
+}
+func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
+	// Use the constant cache prefix
+	cachePrefix := thumbnailColorPrefix
+	var cachedColor RGBColor
 
-func processFeedItems_singleThreaded(feed *gofeed.Feed) []FeedResponseItem {
-	log.Println("Processing feed items for feed:", feed.Title)
-	thumbnail := ""
-	thumbnailColor := RGBColor{128, 128, 128}
-
-	items := feed.Items
-
-	if (feed.ITunesExt != nil) && (feed.ITunesExt.Image != "") {
-		thumbnail = feed.ITunesExt.Image
-		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
-		thumbnailColor = RGBColor{r, g, b}
+	// Try to get the cached color
+	err := cache.Get(cachePrefix, item.Thumbnail, &cachedColor)
+	if err == nil {
+		// Use the cached color
+		item.ThumbnailColor = cachedColor
+		log.Printf("Updated thumbnail color for %s: %v", item.Thumbnail, item.ThumbnailColor)
+	} else {
+		// Thumbnail color is not yet calculated; keep the existing value
+		log.Printf("Thumbnail color not yet available for %s", item.Thumbnail)
 	}
 
-	itemResponses := make(chan FeedResponseItem, len(items))
-	var itemWg sync.WaitGroup
-
-	itemWg.Add(1)
-	go func() {
-		defer itemWg.Done()
-		for _, item := range items {
-			itemResponse := processFeedItem(item, thumbnail, thumbnailColor)
-			itemResponses <- itemResponse
-		}
-		close(itemResponses)
-	}()
-
-	itemWg.Wait()
-	return collectItemResponses(itemResponses)
+	return item
 }
 
 func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 	thumbnail := ""
-	thumbnailColor := RGBColor{128, 128, 128}
+	defaultThumbnailColor := RGBColor{128, 128, 128}
 
-	items := feed.Items
-
-	if (feed.ITunesExt != nil) && (feed.ITunesExt.Image != "") {
+	if feed.ITunesExt != nil && feed.ITunesExt.Image != "" {
 		thumbnail = feed.ITunesExt.Image
 		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
-		thumbnailColor = RGBColor{r, g, b}
-
+		defaultThumbnailColor = RGBColor{r, g, b}
 	}
 
+	var wg sync.WaitGroup
 	sem := make(chan struct{}, numWorkers)
+	itemResponses := make(chan FeedResponseItem, len(feed.Items))
 
-	itemResponses := make(chan FeedResponseItem, len(items))
-	var itemWg sync.WaitGroup
-
-	for _, item := range items {
-		itemWg.Add(1)
+	for _, item := range feed.Items {
+		wg.Add(1)
 		sem <- struct{}{}
 		go func(item *gofeed.Item) {
-			defer func() { itemWg.Done(); <-sem }()
-			itemResponse := processFeedItem(item, thumbnail, thumbnailColor)
+			defer func() {
+				wg.Done()
+				<-sem
+			}()
+			itemResponse := processFeedItem(item, thumbnail, defaultThumbnailColor)
 			itemResponses <- itemResponse
 		}(item)
 	}
 
 	go func() {
-		itemWg.Wait()
+		wg.Wait()
 		close(itemResponses)
 	}()
 
@@ -340,268 +299,155 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 }
 
 func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColor) FeedResponseItem {
-	cacheKey := createHash(item.Link)
 	Link := item.Link
 	Duration := 0
-	metaData := link2json.MetaDataResponseItem{}
-	if cache.Get(metaData_prefix, cacheKey, &metaData) == nil {
-		log.Printf("Loaded metadata from cache for %s", item.Link)
-	}
 
-	author := ""
-	if item.Author != nil {
-		author = item.Author.Name
-	}
-
-	if (item.ITunesExt != nil) && (item.ITunesExt.Author != "") {
-		author = item.ITunesExt.Author
-	}
-
+	author := getItemAuthor(item)
 	categories := strings.Join(item.Categories, ", ")
 
 	if len(item.Enclosures) > 0 {
-		if item.Enclosures[0].URL != "" && item.Enclosures[0].Type == "image/jpeg" {
-			thumbnail = item.Enclosures[0].URL // Use the first enclosure as the thumbnail
+		for _, enclosure := range item.Enclosures {
+			if enclosure.URL != "" && strings.HasPrefix(enclosure.Type, "image/") {
+				thumbnail = enclosure.URL
+				break
+			}
 		}
 	}
 
-	if (thumbnail == "") && (item.Image != nil) {
+	if thumbnail == "" && item.Image != nil {
 		thumbnail = item.Image.URL
 	}
 
-	if item.ITunesExt != nil {
-		if item.ITunesExt.Image != "" {
-			thumbnail = item.ITunesExt.Image
-		}
+	if item.ITunesExt != nil && item.ITunesExt.Image != "" {
+		thumbnail = item.ITunesExt.Image
 	}
 
-	// print the value of item.ItunesExt.Image
-	// log.Println(item.ITunesExt.Image)
+	thumbnailFinder := NewThumbnailFinder()
 
-	thumbnailFinder := NewThumbnailFinder() // Initialize the ThumbnailFinder
-
-	// Extract thumbnail from content or description if not found
-	if thumbnail == "" && item.ITunesExt != nil {
-		if item.Content != "" {
-			thumbnail = thumbnailFinder.extractThumbnailFromContent(item.Content)
-		} else if item.Description != "" {
-			thumbnail = thumbnailFinder.extractThumbnailFromContent(item.Description)
-		}
-	}
-
-	// Extract thumbnail from media content if not found
 	if thumbnail == "" {
-		extItem := &ExtendedItem{}
-		_ = copier.Copy(extItem, item) // Use the copier package to copy the data
-
-		if media, ok := extItem.Extensions["media"]; ok {
-			if content, ok := media["content"]; ok && len(content) > 0 {
-				if url, ok := content[0].Attrs["url"]; ok {
-					extItem.MediaContent = append(extItem.MediaContent, MediaContent{URL: url})
-					thumbnail = url // Use the first media content as the thumbnail
-				}
-			}
-		}
+		thumbnail = thumbnailFinder.FindThumbnailForItem(item)
 	}
 
-	// Extract thumbnail from article if not found
-	if thumbnail == "" && item.ITunesExt == nil {
+	// Initialize thumbnail color to default
+	thumbnailColor = RGBColor{128, 128, 128}
 
-		if len(metaData.Images) > 0 {
-			thumbnail = metaData.Images[0].URL
-		} else if (item.Link != "" && item.Link != "about:blank") && (item.Content != "") {
-			log.Printf("[Thumbnail] getting metadata for %s", item.Link)
-			metaData, err := GetMetaData(item.Link)
-			if err != nil {
-				log.Printf("Failed to get metadata for %s: %v", item.Link, err)
-			} else {
-				if len(metaData.Images) > 0 {
-					thumbnail = metaData.Images[0].URL
-					if err := cache.Set(metaData_prefix, cacheKey, metaData, 24*time.Hour); err != nil {
-						log.Printf("Failed to cache metadata for %s: %v", item.Link, err)
-
-					}
+	// Check if the thumbnail color is already cached
+	cachePrefix := thumbnailColor_prefix
+	var cachedColor RGBColor
+	cacheMutex.Lock()
+	err := cache.Get(cachePrefix, thumbnail, &cachedColor)
+	cacheMutex.Unlock()
+	if err == nil {
+		// Use the cached color
+		thumbnailColor = cachedColor
+	} else {
+		go func(thumbnailURL string) {
+			if thumbnailURL != "" {
+				r, g, b := extractColorFromThumbnail_prominentColor(thumbnailURL)
+				actualColor := RGBColor{r, g, b}
+				log.Printf("Asynchronously extracted color for %s: %v", thumbnailURL, actualColor)
+				if err := cache.Set(thumbnailColorPrefix, thumbnailURL, actualColor, 24*time.Hour); err != nil {
+					log.Printf("Failed to cache color for %s: %v", thumbnailURL, err)
+				} else {
+					log.Printf("Successfully cached color for %s", thumbnailURL)
 				}
 			}
-		}
-
-		cacheKey := createHash(getBaseDomain(item.Link))
-		// check if the metaData for baseDomain is already cached
-		if err := cache.Get(metaData_prefix, cacheKey, &metaData); err != nil {
-			// if not cached get the metaData for baseDomain
-			metaData, err = GetMetaData(getBaseDomain(item.Link))
-			if err != nil {
-				log.Printf("Failed to get metadata for %s: %v", getBaseDomain(item.Link), err)
-			} else {
-				if err := cache.Set(metaData_prefix, cacheKey, metaData, 24*time.Hour); err != nil {
-					log.Printf("Failed to cache metadata for %s: %v", getBaseDomain(item.Link), err)
-
-				}
-			}
-		}
+		}(thumbnail)
 	}
-
-	if thumbnail != "" {
-		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
-		thumbnailColor = RGBColor{r, g, b}
-	}
-
-	parsedContent := parseHTMLContent(item.Content)
 
 	description := item.Description
 	if description == "" {
-		description = parsedContent
+		description = parseHTMLContent(item.Content)
 	}
-
 	description = parseHTMLContent(description)
 
-	item.GUID = createHash(item.Link)
-
 	standardizedPublished := standardizeDate(item.Published)
-	var itemType string
-	if item.ITunesExt != nil {
-		if (item.Enclosures != nil) && (len(item.Enclosures) > 0) {
-			if item.Enclosures[0].Type == "audio/mpeg" {
-				Link = item.Enclosures[0].URL
-			}
-			if item.ITunesExt != nil && item.ITunesExt.Duration != "" {
-				durationStr := item.ITunesExt.Duration
+	itemType, duration := determineItemTypeAndDuration(item)
+	Duration = duration
 
-				// Try parsing as integer (if duration is in seconds)
-				durationInt, err := strconv.Atoi(durationStr)
-				if err != nil {
-					// If the duration is not in seconds, try parsing it as HH:MM:SS
-					parts := strings.Split(durationStr, ":")
-					if len(parts) == 3 { // HH:MM:SS format
-						hours, _ := strconv.Atoi(parts[0])
-						minutes, _ := strconv.Atoi(parts[1])
-						seconds, _ := strconv.Atoi(parts[2])
-						durationInt = (hours * 3600) + (minutes * 60) + seconds
-					} else if len(parts) == 2 { // MM:SS format
-						minutes, _ := strconv.Atoi(parts[0])
-						seconds, _ := strconv.Atoi(parts[1])
-						durationInt = (minutes * 60) + seconds
-					}
-				}
-
-				Duration = durationInt
-			}
-
-		}
-		itemType = "podcast"
-		//return item with podcast Details
-		return FeedResponseItem{
-			Type:            itemType,
-			ID:              item.GUID,
-			Title:           item.Title,
-			Description:     description,
-			Link:            Link,
-			Duration:        Duration,
-			Author:          author,
-			Published:       standardizedPublished,
-			Created:         standardizedPublished,
-			Content:         parsedContent,
-			Content_Encoded: item.Content,
-			Categories:      categories,
-			Enclosures:      item.Enclosures,
-			Thumbnail:       thumbnail,
-			ThumbnailColor:  thumbnailColor,
-		}
-	} else {
-		itemType = "article"
-		return FeedResponseItem{
-			Type:            itemType,
-			ID:              item.GUID,
-			Title:           item.Title,
-			Description:     description,
-			Link:            Link,
-			Author:          author,
-			Published:       standardizedPublished,
-			Created:         standardizedPublished,
-			Content:         parsedContent,
-			Content_Encoded: item.Content,
-			Categories:      categories,
-			Enclosures:      item.Enclosures,
-			Thumbnail:       thumbnail,
-			ThumbnailColor:  thumbnailColor,
-		}
-
+	responseItem := FeedResponseItem{
+		Type:            itemType,
+		ID:              createHash(item.Link),
+		Title:           item.Title,
+		Description:     description,
+		Link:            Link,
+		Duration:        Duration,
+		Author:          author,
+		Published:       standardizedPublished,
+		Created:         standardizedPublished,
+		Content:         parseHTMLContent(item.Content),
+		Content_Encoded: item.Content,
+		Categories:      categories,
+		Enclosures:      item.Enclosures,
+		Thumbnail:       thumbnail,
+		ThumbnailColor:  thumbnailColor,
 	}
 
+	return responseItem
 }
 
 func standardizeDate(dateStr string) string {
 	if dateStr == "" {
 		log.Info("[Standardize Date] Received empty date string")
-		return "" // Or return a default date string if necessary
+		return ""
 	}
 
 	const outputLayout = "2006-01-02T15:04:05Z07:00"
-	var standardizedDate string
 	dateFormats := []string{
 		time.RFC1123,
 		time.RFC1123Z,
 		time.RFC3339,
-		// Add more formats as needed
+		time.RFC822,
+		time.RFC850,
+		time.ANSIC,
+		"Mon, 02 Jan 2006 15:04:05 -0700",
 	}
 
-	var parsedTime time.Time
-	var err error
 	for _, layout := range dateFormats {
-		parsedTime, err = time.Parse(layout, dateStr)
-		if err == nil {
-			standardizedDate = parsedTime.Format(outputLayout)
-			break
+		if parsedTime, err := time.Parse(layout, dateStr); err == nil {
+			return parsedTime.Format(outputLayout)
 		}
 	}
 
-	if err != nil {
-		log.Infof("[Standardize Date] Failed to parse date: %v", err)
-		// Handle error, maybe set a default value or leave the field empty
-	}
-
-	return standardizedDate
+	log.Infof("[Standardize Date] Failed to parse date: %v", dateStr)
+	return ""
 }
 
-func createFeedResponse(feed *gofeed.Feed, url string, metaData link2json.MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
+func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData link2json.MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
 	var feedType string
 	var thumbnail string
 
 	if feed == nil {
-		log.Println("createFeedResponse: feed is nil for", url)
+		log.Println("createFeedResponse: feed is nil for", feedURL)
 		return FeedResponse{}
-	}
-
-	if metaData.Favicon == "" {
-
-		if feed.Image != nil && feed.Image.URL != "" {
-			thumbnail = feed.Image.URL
-		}
-	} else {
-		thumbnail = metaData.Favicon
 	}
 
 	if feed.ITunesExt != nil {
 		feedType = "podcast"
-		if feed.Image != nil {
+		if feed.Image != nil && feed.Image.URL != "" {
 			thumbnail = feed.Image.URL
 		}
 	} else {
 		feedType = "article"
+		if metaData.Favicon != "" {
+			thumbnail = metaData.Favicon
+		} else if feed.Image != nil && feed.Image.URL != "" {
+			thumbnail = feed.Image.URL
+		}
 	}
 
-	SiteTitle := metaData.Title
-	if SiteTitle == "" {
-		SiteTitle = feed.Title
+	siteTitle := metaData.Title
+	if siteTitle == "" {
+		siteTitle = feed.Title
 	}
 
 	return FeedResponse{
 		Status:        "ok",
-		GUID:          createHash(url),
+		GUID:          createHash(feedURL),
 		Type:          feedType,
-		SiteTitle:     SiteTitle,
+		SiteTitle:     siteTitle,
 		FeedTitle:     feed.Title,
-		FeedUrl:       url,
+		FeedUrl:       feedURL,
 		Description:   feed.Description,
 		Link:          metaData.Domain,
 		LastUpdated:   standardizeDate(feed.Updated),
@@ -624,43 +470,24 @@ func collectResponses(responses chan FeedResponse) []FeedResponse {
 }
 
 func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseItem {
-	// itemCount := 20 // Default to 20 items
 	var feedItems []FeedResponseItem
 	for itemResponse := range itemResponses {
 		feedItems = append(feedItems, itemResponse)
 	}
 
-	// Sort the feedItems by Published date in descending order
 	sort.Slice(feedItems, func(i, j int) bool {
 		timeI, errI := time.Parse(layout, feedItems[i].Published)
 		if errI != nil {
-			log.Printf("[Sort]Failed to parse time for item I: %v", errI)
+			log.Printf("[Sort] Failed to parse time for item I: %v", errI)
 			return false
 		}
 		timeJ, errJ := time.Parse(layout, feedItems[j].Published)
 		if errJ != nil {
-			log.Printf("[Sort]Failed to parse time for item J: %v", errJ)
-			return true // Assume i < j if j's time fails to parse
+			log.Printf("[Sort] Failed to parse time for item J: %v", errJ)
+			return true
 		}
-		return timeI.After(timeJ) // Descending order
+		return timeI.After(timeJ)
 	})
-
-	// Adjust the number of items returned based on itemCount
-	// if itemCount != 0 {
-	// 	if itemCount == -1 {
-	// 		// Return all items
-	// 		return feedItems
-	// 	} else if len(feedItems) > itemCount {
-	// 		// Return up to itemCount items
-	// 		return feedItems[:itemCount]
-	// 	}
-	// 	// If itemCount is greater than the number of items, return all items
-	// } else {
-	// 	// Default to returning 20 items or all if fewer than 20
-	// 	if len(feedItems) > 20 {
-	// 		return feedItems[:20]
-	// 	}
-	// }
 
 	return feedItems
 }
@@ -676,14 +503,12 @@ func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
 	}
 }
 
-// Feed refresh logic
-
 func refreshFeeds() {
-	urls := getAllCachedURLs() // This function should return all URLs from the cache
+	urls := getAllCachedURLs()
 
 	for _, url := range urls {
 		log.Printf("Refreshing feed for URL: %s", url)
-		_ = processURL(url) // Refresh the feed and ignore the result
+		_ = processURL(url)
 	}
 }
 
@@ -691,38 +516,9 @@ func addURLToList(url string) {
 	urlListMutex.Lock()
 	defer urlListMutex.Unlock()
 
-	urlList = append(urlList, url)
-}
-
-// func removeURLFromList(url string) {
-// 	urlListMutex.Lock()
-// 	defer urlListMutex.Unlock()
-
-// 	for i, u := range urlList {
-// 		if u == url {
-// 			urlList = append(urlList[:i], urlList[i+1:]...)
-// 			break
-// 		}
-// 	}
-// }
-
-func IsUrl(str string) bool {
-	url, err := url.ParseRequestURI(str)
-	if err != nil {
-		logrus.Info(err.Error())
-		return false
+	if !stringInSlice(url, urlList) {
+		urlList = append(urlList, url)
 	}
-
-	address := net.ParseIP(url.Host)
-	logrus.Info("url-info ", "host: ", address)
-
-	if address == nil {
-		logrus.Info("url-info ", "host: ", url.Host)
-
-		return strings.Contains(url.Host, ".")
-	}
-
-	return true
 }
 
 func getAllCachedURLs() []string {
@@ -730,22 +526,97 @@ func getAllCachedURLs() []string {
 	defer urlListMutex.Unlock()
 
 	if len(urlList) == 0 {
-		startTime := time.Now() // Record the start time
+		startTime := time.Now()
 
 		var err error
 		urlList, err = cache.GetSubscribedListsFromCache(feed_prefix)
 		if err != nil {
-			// Handle the error
 			log.Println("Failed to get subscribed lists from cache:", err)
 			return nil
 		}
 
-		duration := time.Since(startTime) // Calculate the duration
-
-		// Log the urlList and the duration
-		log.Infof("Loaded urlList from cache: %s", urlList)
-		log.Infof("Time taken to load urlList: %s", duration)
+		duration := time.Since(startTime)
+		log.Infof("Loaded urlList from cache: %v", urlList)
+		log.Infof("Time taken to load urlList: %v", duration)
 	}
 
 	return append([]string(nil), urlList...)
+}
+
+func isValidURL(str string) bool {
+	parsedURL, err := url.ParseRequestURI(str)
+	if err != nil {
+		logrus.Info(err.Error())
+		return false
+	}
+
+	host := parsedURL.Hostname()
+	if net.ParseIP(host) != nil {
+		return true
+	}
+
+	return strings.Contains(host, ".")
+}
+
+func sanitizeURL(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || parsedURL.Scheme == "" {
+		rawURL = "https://" + rawURL
+	} else if parsedURL.Scheme == "http" {
+		rawURL = strings.Replace(rawURL, "http://", "https://", 1)
+	}
+	return rawURL
+}
+
+func getItemAuthor(item *gofeed.Item) string {
+	if item.ITunesExt != nil && item.ITunesExt.Author != "" {
+		return item.ITunesExt.Author
+	}
+	if item.Author != nil && item.Author.Name != "" {
+		return item.Author.Name
+	}
+	return ""
+}
+
+func determineItemTypeAndDuration(item *gofeed.Item) (string, int) {
+	if item.ITunesExt != nil {
+		itemType := "podcast"
+		duration := parseDuration(item.ITunesExt.Duration)
+		return itemType, duration
+	}
+	return "article", 0
+}
+
+func parseDuration(durationStr string) int {
+	if durationStr == "" {
+		return 0
+	}
+
+	if durationInt, err := strconv.Atoi(durationStr); err == nil {
+		return durationInt
+	}
+
+	parts := strings.Split(durationStr, ":")
+	switch len(parts) {
+	case 3:
+		hours, _ := strconv.Atoi(parts[0])
+		minutes, _ := strconv.Atoi(parts[1])
+		seconds, _ := strconv.Atoi(parts[2])
+		return hours*3600 + minutes*60 + seconds
+	case 2:
+		minutes, _ := strconv.Atoi(parts[0])
+		seconds, _ := strconv.Atoi(parts[1])
+		return minutes*60 + seconds
+	default:
+		return 0
+	}
+}
+
+func stringInSlice(str string, list []string) bool {
+	for _, v := range list {
+		if v == str {
+			return true
+		}
+	}
+	return false
 }
