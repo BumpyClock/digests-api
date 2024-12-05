@@ -6,7 +6,7 @@ toolchain go1.23.1
 
 require (
 	cloud.google.com/go/texttospeech v1.8.1
-	github.com/BumpyClock/go-link2json v1.0.10
+	github.com/BumpyClock/go-link2json v1.0.12
 	github.com/EdlinOrg/prominentcolor v1.0.0
 	github.com/PuerkitoBio/goquery v1.10.0
 	github.com/go-shiori/go-readability v0.0.0-20240923125239-59a7bd165825
