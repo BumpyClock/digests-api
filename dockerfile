@@ -1,6 +1,5 @@
 # Start from the latest golang base image
-FROM golang:latest
-
+FROM golang:1.23 
 # Add Maintainer Info
 LABEL maintainer="Aditya Sharma <aditya@adityasharma.net>"
 
@@ -44,10 +43,14 @@ RUN go mod download
 COPY src/ .
 
 # Build the Go app
-RUN GOOS=linux GOARCH=amd64 go build -o main .
+RUN go build -o main .
 
-# Expose port 8080 to the outside world
+
+
+
+# Expose port 8000
 EXPOSE 8000
+
 
 # Command to run the executable
 CMD ["./main", "--redis", "redis:6379"]

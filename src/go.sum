@@ -11,14 +11,9 @@ cloud.google.com/go/longrunning v0.6.0 h1:mM1ZmaNsQsnb+5n1DNPeL0KwQd9jQRqSqSDEkB
 cloud.google.com/go/longrunning v0.6.0/go.mod h1:uHzSZqW89h7/pasCWNYdUpwGz3PcVWhrWupreVPYLts=
 cloud.google.com/go/texttospeech v1.8.1 h1:LpX9xKoGObltmT6+RGxqUeSJIq0uqPzo+fcbbOmujbY=
 cloud.google.com/go/texttospeech v1.8.1/go.mod h1:WoTykB+4mfSDDYPuk7smrdXNRGoJJS6dXRR6l4XqD9g=
-github.com/BumpyClock/go-link2json v1.0.8 h1:Td05glHnrLLOyVrZwFylkW4LsQ1ovdWNbdqqWa8F734=
-github.com/BumpyClock/go-link2json v1.0.8/go.mod h1:Bh3LQA2+h3H2UUloMWf1FcdPe7z8D6RIXEbgs4LxSwY=
-
-github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-
 github.com/BumpyClock/go-link2json v1.0.10 h1:8K6yYMemCR7/uAN68Xz1uadKqAHuCS1CsAkkX/eywq8=
 github.com/BumpyClock/go-link2json v1.0.10/go.mod h1:Bh3LQA2+h3H2UUloMWf1FcdPe7z8D6RIXEbgs4LxSwY=
-
+github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/EdlinOrg/prominentcolor v1.0.0 h1:sQNY8Dtsv3PK3J1LbmrDmtlZm9Y9U8Loi1iZIl4YN3Y=
 github.com/EdlinOrg/prominentcolor v1.0.0/go.mod h1:mYmDsxfcmBz6izH/SqtSzfsUiZdPNPpPgUPKCZq70KQ=
 github.com/PuerkitoBio/goquery v1.10.0 h1:6fiXdLuUvYs2OJSvNRqlNPoBm6YABE226xrbavY5Wv4=
