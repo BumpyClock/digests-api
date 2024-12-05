@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"math/rand"
+	"net"
 	"sort"
 	"strconv"
 
@@ -13,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"net/url"
 	URL "net/url"
 	"strings"
 	"sync"
@@ -174,16 +176,21 @@ func fetchAndCacheFeed(url string, cacheKey string) (FeedResponse, error) {
 	var metaData = link2json.MetaDataResponseItem{}
 
 	if err := cache.Get(metaData_prefix, basedomainCacheKey, &metaData); err != nil {
-		tempmetaData, err := GetMetaData(baseDomain)
-		if err != nil {
-			log.Printf("Failed to get metadata for %s: %v", baseDomain, err)
-		} else {
-			if err := cache.Set(metaData_prefix, cacheKey, metaData, 24*time.Hour); err != nil {
-				metaData = tempmetaData
-				log.Printf("Added metaData to cache metadata for %s: %v", baseDomain, err)
+		if IsUrl(baseDomain) {
+			tempmetaData, err := GetMetaData(baseDomain)
+			if err != nil {
+				log.Printf("Failed to get metadata for %s: %v", baseDomain, err)
 			} else {
-				metaData = tempmetaData
+				if err := cache.Set(metaData_prefix, cacheKey, metaData, 24*time.Hour); err != nil {
+					metaData = tempmetaData
+					log.Printf("Added metaData to cache metadata for %s: %v", baseDomain, err)
+				} else {
+					metaData = tempmetaData
+				}
 			}
+		} else {
+			metaData = link2json.MetaDataResponseItem{}
+			log.Printf("[fetchAndCacheFeed] Invalid URL %s", baseDomain)
 		}
 	} else {
 		log.Printf("Loaded metadata from cache for %s", baseDomain)
@@ -402,7 +409,8 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 
 		if len(metaData.Images) > 0 {
 			thumbnail = metaData.Images[0].URL
-		} else {
+		} else if (item.Link != "" && item.Link != "about:blank") && (item.Content != "") {
+			log.Printf("[Thumbnail] getting metadata for %s", item.Link)
 			metaData, err := GetMetaData(item.Link)
 			if err != nil {
 				log.Printf("Failed to get metadata for %s: %v", item.Link, err)
@@ -582,7 +590,7 @@ func createFeedResponse(feed *gofeed.Feed, url string, metaData link2json.MetaDa
 		feedType = "article"
 	}
 
-	SiteTitle := metaData.Sitename
+	SiteTitle := metaData.Title
 	if SiteTitle == "" {
 		SiteTitle = feed.Title
 	}
@@ -697,6 +705,25 @@ func addURLToList(url string) {
 // 		}
 // 	}
 // }
+
+func IsUrl(str string) bool {
+	url, err := url.ParseRequestURI(str)
+	if err != nil {
+		logrus.Info(err.Error())
+		return false
+	}
+
+	address := net.ParseIP(url.Host)
+	logrus.Info("url-info ", "host: ", address)
+
+	if address == nil {
+		logrus.Info("url-info ", "host: ", url.Host)
+
+		return strings.Contains(url.Host, ".")
+	}
+
+	return true
+}
 
 func getAllCachedURLs() []string {
 	urlListMutex.Lock()

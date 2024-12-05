@@ -29,6 +29,9 @@ func NewThumbnailFinder() *ThumbnailFinder {
 
 func GetMetaData(url string) (link2json.MetaDataResponseItem, error) {
 	// Get metadata from the URL
+	if url == "" || url == "http://" || url == "://" || url == "about:blank" {
+		return link2json.MetaDataResponseItem{}, fmt.Errorf("URL is empty")
+	}
 	metaData, err := link2json.GetMetadata(url)
 	if err != nil {
 		return link2json.MetaDataResponseItem{}, err
