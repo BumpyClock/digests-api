@@ -60,15 +60,26 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 	}
 
 	if item.Link != "" {
-		thumbnail, err := tf.fetchImageFromSource(item.Link)
+		metaData, err := GetMetaData(item.Link)
 		if err != nil {
-			log.Printf("Error fetching image for %s: %v", item.Link, err)
+			log.Printf("Error getting metadata for %s: %v", item.Link, err)
 			return ""
 		}
-		tf.cache.Store(item.Link, thumbnail)
-		return thumbnail
-	}
+		// thumbnail, err := tf.fetchImageFromSource(item.Link)
+		// if err != nil {
+		// 	log.Printf("Error fetching image for %s: %v", item.Link, err)
+		// 	return ""
+		// }
+		if len(metaData.Images) > 0 {
+			thumbnail = metaData.Images[0].URL
+		}
+		if thumbnail != "" {
+			tf.cache.Store(item.Link, thumbnail)
+			return thumbnail
+		}
 
+		return ""
+	}
 	return ""
 }
 
