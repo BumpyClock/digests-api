@@ -38,7 +38,6 @@ func parseHTMLContent(htmlContent string) string {
 		// Fallback to the raw HTML if parse fails
 		return htmlContent
 	}
-
 	var f func(*html.Node)
 	var textContent strings.Builder
 
@@ -51,7 +50,6 @@ func parseHTMLContent(htmlContent string) string {
 		}
 	}
 	f(doc)
-
 	return textContent.String()
 }
 
@@ -67,21 +65,35 @@ func getBaseDomain(rawURL string) string {
 }
 
 // parseHandler is an HTTP handler for the /parse endpoint,
-// expecting a POST request with a JSON body of feed URLs to parse.
-// It processes each URL concurrently and returns the aggregated feed responses.
+// expecting a POST request with a JSON body of feed URLs to parse,
+// plus optional pagination parameters (Page, ItemsPerPage).
 func parseHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// Default values for pagination
+	page := 1
+	itemsPerPage := 50
+
+	// Decode request into ParseRequest
 	req, err := decodeRequest(r)
 	if err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	responses := processURLs(req.URLs)
+	// If user provided a page > 0, use it; otherwise keep default
+	if req.Page > 0 {
+		page = req.Page
+	}
+	// If user provided itemsPerPage > 0, use it; otherwise keep default
+	if req.ItemsPerPage > 0 {
+		itemsPerPage = req.ItemsPerPage
+	}
+
+	responses := processURLs(req.URLs, page, itemsPerPage)
 	sendResponse(w, responses)
 }
 
@@ -93,21 +105,21 @@ func decodeRequest(r *http.Request) (ParseRequest, error) {
 }
 
 // processURLs concurrently processes each feed URL using processURL,
-// returns all feed responses as a slice.
-func processURLs(urls []string) []FeedResponse {
+// returns all feed responses (with pagination applied) as a slice.
+func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, numWorkers)
 	responses := make(chan FeedResponse, len(urls))
 
 	for _, url := range urls {
 		wg.Add(1)
-		sem <- struct{}{} // acquire concurrency slot
+		sem <- struct{}{}
 		go func(feedURL string) {
 			defer func() {
 				wg.Done()
-				<-sem // release concurrency slot
+				<-sem
 			}()
-			response := processURL(feedURL)
+			response := processURL(feedURL, page, itemsPerPage)
 			responses <- response
 		}(url)
 	}
@@ -120,8 +132,7 @@ func processURLs(urls []string) []FeedResponse {
 	return collectResponses(responses)
 }
 
-// isCacheStale checks whether lastRefreshed is older than refresh_timer (in minutes),
-// indicating the feed data might be stale.
+// isCacheStale checks whether lastRefreshed is older than refresh_timer (in minutes).
 func isCacheStale(lastRefreshed string) bool {
 	parsedTime, err := time.Parse(layout, lastRefreshed)
 	if err != nil {
@@ -202,19 +213,20 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 }
 
 // processURL checks the cache for a feed URL; if found and not stale, returns the cached feed.
-// Otherwise, calls fetchAndCacheFeed to retrieve and cache a fresh feed. This is the main entry
-// point for retrieving feed data.
-func processURL(rawURL string) FeedResponse {
+// Otherwise, calls fetchAndCacheFeed to retrieve and cache a fresh feed. Pagination is then applied
+// to the final list of items before returning.
+func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 	feedURL := sanitizeURL(rawURL)
 	cacheKey := feedURL
 
 	var cachedFeed FeedResponse
+	// Try retrieving from cache first
 	if err := cache.Get(feed_prefix, cacheKey, &cachedFeed); err == nil && cachedFeed.SiteTitle != "" {
 		// Cache hit
 		log.WithFields(logrus.Fields{"url": feedURL}).
 			Info("[processURL] [Cache Hit] Using cached feed details")
 
-		// If feed is stale, refresh in background
+		// Check staleness
 		if isCacheStale(cachedFeed.LastRefreshed) {
 			log.WithFields(logrus.Fields{"url": feedURL}).
 				Info("[processURL] Cache is stale, refreshing in background")
@@ -230,7 +242,12 @@ func processURL(rawURL string) FeedResponse {
 
 		// Optionally re-check or skip thumbnail colors
 		updatedItems := updateFeedItemsWithThumbnailColors(cachedFeed.Items)
+		// Reassign updated items
 		cachedFeed.Items = &updatedItems
+
+		// **Apply pagination** to the final items
+		applyPagination(cachedFeed.Items, page, itemsPerPage)
+
 		return cachedFeed
 	}
 
@@ -251,7 +268,45 @@ func processURL(rawURL string) FeedResponse {
 			Error:   errNew,
 		}
 	}
+
+	// Optionally re-check or skip thumbnail colors
+	updatedItems := updateFeedItemsWithThumbnailColors(newResp.Items)
+	newResp.Items = &updatedItems
+
+	// **Apply pagination** to the final items
+	applyPagination(newResp.Items, page, itemsPerPage)
+
 	return newResp
+}
+
+// applyPagination modifies the feed items in place, slicing to the requested page and itemsPerPage
+// (e.g. page=2, itemsPerPage=10 => skip first 10 items, return next 10).
+func applyPagination(items *[]FeedResponseItem, page, itemsPerPage int) {
+	if items == nil || len(*items) == 0 {
+		return
+	}
+	if page < 1 {
+		page = 1
+	}
+	if itemsPerPage < 1 {
+		itemsPerPage = 1
+	}
+
+	totalItems := len(*items)
+	start := (page - 1) * itemsPerPage
+	if start >= totalItems {
+		// If start is beyond total items, return empty
+		*items = []FeedResponseItem{}
+		return
+	}
+
+	end := start + itemsPerPage
+	if end > totalItems {
+		end = totalItems
+	}
+
+	// Slice the items
+	*items = (*items)[start:end]
 }
 
 // updateFeedItemsWithThumbnailColors iterates over existing items in a feed,
@@ -279,13 +334,12 @@ func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 		log.Printf("[updateThumbnailColorForItem] No cached color for %s yet", item.Thumbnail)
 	case item.ThumbnailColorComputed == "set":
 		// Already set
-		// log.Printf("[updateThumbnailColorForItem] Color already set for %s: %v", item.Thumbnail, item.ThumbnailColor)
 	case item.ThumbnailColorComputed == "computed":
 		item.ThumbnailColor = cachedColor
 		item.ThumbnailColorComputed = "set"
 		log.Printf("[updateThumbnailColorForItem] Updated color for %s: %v", item.Thumbnail, item.ThumbnailColor)
 	default:
-		// log.Printf("[updateThumbnailColorForItem] Unknown or already set")
+		// No additional logic
 	}
 	return item
 }
@@ -549,7 +603,7 @@ func refreshFeeds() {
 	urls := getAllCachedURLs()
 	for _, url := range urls {
 		log.Printf("[refreshFeeds] Refreshing feed for URL: %s", url)
-		_ = processURL(url) // ignore the returned response
+		_ = processURL(url, 1, 20) // or any default paging
 	}
 }
 
@@ -673,7 +727,6 @@ func stringInSlice(str string, list []string) bool {
 // mergeFeedItemsAtParserLevel merges old items from the cache with newly fetched items, deduplicating by ID
 // and retaining only items from within the last 24 hours (cachePeriod). Also updates items if content changed.
 func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([]FeedResponseItem, error) {
-	// The feedResponse is stored under feed_prefix:feedURL
 	cacheKey := feedURL
 	var existingFeedResponse FeedResponse
 	var existingItems []FeedResponseItem
@@ -683,14 +736,12 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 		log.Errorf("[mergeFeedItemsAtParserLevel] Error getting existing items for feed %s: %v", feedURL, err)
 		existingItems = nil
 	} else {
-		// We have existing feed items
 		if existingFeedResponse.Items != nil {
 			existingItems = *existingFeedResponse.Items
 			log.Printf("[mergeFeedItemsAtParserLevel] Found %d existing items for feed %s", len(existingItems), feedURL)
 		}
 	}
 
-	// Convert existing items into a map by ID (GUID).
 	itemMap := make(map[string]FeedResponseItem)
 	log.Printf("[mergeFeedItemsAtParserLevel] Merging %d existing items with %d new items", len(existingItems), len(newItems))
 	for _, oldItem := range existingItems {
@@ -702,25 +753,22 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 	// Merge new items
 	for _, newIt := range newItems {
 		if oldIt, found := itemMap[newIt.ID]; found {
-			// existing item found by GUID
 			if isUpdatedContent(oldIt, newIt) {
 				itemMap[newIt.ID] = newIt
 			}
 		} else {
-			// item is new; only keep if within last N days
 			if isWithinPeriod(newIt, cachePeriod) {
 				itemMap[newIt.ID] = newIt
 			}
 		}
 	}
 
-	// Convert map back to slice
 	merged := make([]FeedResponseItem, 0, len(itemMap))
 	for _, v := range itemMap {
 		merged = append(merged, v)
 	}
 
-	// Store merged items in the cache so subsequent fetches have the updated items
+	// Store merged items in the cache so subsequent fetches have updated items
 	if err := cache.Set(feed_prefix, feedURL, merged, 24*time.Hour); err != nil {
 		return nil, err
 	}

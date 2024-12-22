@@ -5,8 +5,11 @@ import (
 )
 
 // ParseRequest represents the expected incoming JSON payload structure.
+// ParseRequest represents the expected JSON body for the /parse endpoint.
 type ParseRequest struct {
-	URLs []string `json:"urls"`
+	URLs         []string `json:"urls"`
+	Page         int      `json:"page"`
+	ItemsPerPage int      `json:"itemsperpage"`
 }
 
 type RGBColor struct {
