@@ -170,3 +170,57 @@ func searchPodcast(r *http.Request, query string) []PodcastSearchResponseItem {
 	responseItems := createPodcastSearchResponse(searchResults.Items)
 	return responseItems
 }
+
+// searchHandler handles the /search endpoint
+func searchHandler(w http.ResponseWriter, r *http.Request) {
+	// Get the 'url' query parameter
+	searchType := r.URL.Query().Get("type")
+	if searchType == "rss" {
+		queryURL := r.URL.Query().Get("q")
+		if queryURL == "" {
+			http.Error(w, "No url provided", http.StatusBadRequest)
+			response := map[string]string{
+				"status": "error",
+				"error":  "No url provided",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		} else {
+			var searchResults []FeedSearchResponseItem = searchRSS(queryURL)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(searchResults)
+			return
+
+		}
+
+	} else if searchType == "podcast" {
+		query := r.URL.Query().Get("q")
+		if query == "" {
+			http.Error(w, "No query provided", http.StatusBadRequest)
+			response := map[string]string{
+				"status": "error",
+				"error":  "No query provided",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		} else {
+			var searchResults []PodcastSearchResponseItem = searchPodcast(r, query)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(searchResults)
+			return
+		}
+
+	} else {
+		http.Error(w, "No or invalid type provided", http.StatusBadRequest)
+		response := map[string]string{
+			"status": "error",
+			"error":  "No or invalid type provided",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+}
