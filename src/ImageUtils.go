@@ -149,7 +149,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Attempt to retrieve the color from the cache
 	err := cache.Get(cachePrefix, imageURL, &cachedColor)
 	if err == nil {
-		log.Printf("[extractColorFromThumbnail_prominentColor] Found cached color for %s: %v", imageURL, cachedColor)
+		// log.Printf("[extractColorFromThumbnail_prominentColor] Found cached color for %s: %v", imageURL, cachedColor)
 		return cachedColor.R, cachedColor.G, cachedColor.B
 	}
 
@@ -181,11 +181,11 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
-		log.Printf("Failed to decode image %s: %v", imageURL, err)
+		// log.Printf("Failed to decode image %s: %v", imageURL, err)
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
-	log.Printf("Starting color extraction for %s", imageURL)
+	// log.Printf("Starting color extraction for %s", imageURL)
 
 	bounds := img.Bounds()
 	imgNRGBA := image.NewNRGBA(bounds)
@@ -210,7 +210,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	if len(colors) > 0 {
 		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
-		log.Printf("Extracted color for %s: %v", imageURL, extractedColor)
+		// log.Printf("Extracted color for %s: %v", imageURL, extractedColor)
 		if err := cache.Set(cachePrefix, imageURL, extractedColor, 24*time.Hour); err != nil {
 			log.Printf("Failed to cache color for %s: %v", imageURL, err)
 		}

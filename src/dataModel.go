@@ -29,23 +29,24 @@ type ExtendedItem struct {
 
 // FeedResponseItem represents an enriched structure for an individual feed item.
 type FeedResponseItem struct {
-	Type            string                      `json:"type"`
-	ID              string                      `json:"id"`
-	Title           string                      `json:"title"`
-	Description     string                      `json:"description"`
-	Link            string                      `json:"link"`
-	Author          string                      `json:"author"`
-	Published       string                      `json:"published"`
-	Content         string                      `json:"content"`
-	Created         string                      `json:"created"`
-	Content_Encoded string                      `json:"content_encoded"`
-	Categories      string                      `json:"categories"`
-	Enclosures      []*gofeed.Enclosure         `json:"enclosures"`
-	Thumbnail       string                      `json:"thumbnail"`
-	ThumbnailColor  RGBColor                    `json:"thumbnailColor"`
-	EpisodeType     string                      `json:"episodeType,omitempty"`
-	Subtitle        []PodcastTranscriptsDetails `json:"subtitle,omitempty"`
-	Duration        int                         `json:"duration,omitempty"`
+	Type                   string                      `json:"type"`
+	ID                     string                      `json:"id"`
+	Title                  string                      `json:"title"`
+	Description            string                      `json:"description"`
+	Link                   string                      `json:"link"`
+	Author                 string                      `json:"author"`
+	Published              string                      `json:"published"`
+	Content                string                      `json:"content"`
+	Created                string                      `json:"created"`
+	Content_Encoded        string                      `json:"content_encoded"`
+	Categories             string                      `json:"categories"`
+	Enclosures             []*gofeed.Enclosure         `json:"enclosures"`
+	Thumbnail              string                      `json:"thumbnail"`
+	ThumbnailColor         RGBColor                    `json:"thumbnailColor"`
+	ThumbnailColorComputed string                      `json:"thumbnailColorComputed"`
+	EpisodeType            string                      `json:"episodeType,omitempty"`
+	Subtitle               []PodcastTranscriptsDetails `json:"subtitle,omitempty"`
+	Duration               int                         `json:"duration,omitempty"`
 }
 
 // FeedResponse represents the structure for the overall feed, including metadata and items.

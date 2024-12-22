@@ -23,11 +23,12 @@ var (
 	log           = logrus.New()
 	urlList       []string
 	urlListMutex  = &sync.Mutex{}
-	refresh_timer = 15
+	refresh_timer = 60
 	redis_address = "localhost:6379"
 	numWorkers    = runtime.NumCPU()
 	cacheMutex    = &sync.Mutex{}
 	httpClient    = &http.Client{Timeout: 20 * time.Second}
+	cachePeriod   = 30
 )
 
 func main() {
