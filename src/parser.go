@@ -1,4 +1,3 @@
-// parser.go
 package main
 
 import (
@@ -21,21 +20,28 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// The date/time layout format used throughout the code.
 const layout = "2006-01-02T15:04:05Z07:00"
 
+// createHash returns a SHA-256 hash of the given string s.
 func createHash(s string) string {
-	hash := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(hash[:])
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
+// parseHTMLContent attempts to parse htmlContent as HTML,
+// extracting and returning only the text content. If parsing fails,
+// the original htmlContent is returned unchanged.
 func parseHTMLContent(htmlContent string) string {
 	doc, err := html.Parse(strings.NewReader(htmlContent))
 	if err != nil {
-		return htmlContent // Return the original content if parsing fails
+		// Fallback to the raw HTML if parse fails
+		return htmlContent
 	}
 
 	var f func(*html.Node)
 	var textContent strings.Builder
+
 	f = func(n *html.Node) {
 		if n.Type == html.TextNode {
 			textContent.WriteString(n.Data)
@@ -49,15 +55,20 @@ func parseHTMLContent(htmlContent string) string {
 	return textContent.String()
 }
 
+// getBaseDomain attempts to parse rawURL and returns its scheme + hostname (e.g., https://example.com).
+// If parsing fails, an empty string is returned.
 func getBaseDomain(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		log.Printf("Failed to parse URL %s: %v", rawURL, err)
+		log.Printf("[getBaseDomain] Failed to parse URL %s: %v", rawURL, err)
 		return ""
 	}
 	return parsedURL.Scheme + "://" + parsedURL.Host
 }
 
+// parseHandler is an HTTP handler for the /parse endpoint,
+// expecting a POST request with a JSON body of feed URLs to parse.
+// It processes each URL concurrently and returns the aggregated feed responses.
 func parseHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -74,12 +85,15 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 	sendResponse(w, responses)
 }
 
+// decodeRequest reads and unmarshals the request body into a ParseRequest object.
 func decodeRequest(r *http.Request) (ParseRequest, error) {
 	var req ParseRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	return req, err
 }
 
+// processURLs concurrently processes each feed URL using processURL,
+// returns all feed responses as a slice.
 func processURLs(urls []string) []FeedResponse {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, numWorkers)
@@ -87,13 +101,13 @@ func processURLs(urls []string) []FeedResponse {
 
 	for _, url := range urls {
 		wg.Add(1)
-		sem <- struct{}{}
-		go func(url string) {
+		sem <- struct{}{} // acquire concurrency slot
+		go func(feedURL string) {
 			defer func() {
 				wg.Done()
-				<-sem
+				<-sem // release concurrency slot
 			}()
-			response := processURL(url)
+			response := processURL(feedURL)
 			responses <- response
 		}(url)
 	}
@@ -106,176 +120,128 @@ func processURLs(urls []string) []FeedResponse {
 	return collectResponses(responses)
 }
 
+// isCacheStale checks whether lastRefreshed is older than refresh_timer (in minutes),
+// indicating the feed data might be stale.
 func isCacheStale(lastRefreshed string) bool {
 	parsedTime, err := time.Parse(layout, lastRefreshed)
 	if err != nil {
-		log.Printf("Failed to parse LastRefreshed: %v", err)
+		log.Printf("[isCacheStale] Failed to parse LastRefreshed: %v", err)
 		return false
 	}
 
 	if time.Since(parsedTime) > time.Duration(refresh_timer)*time.Minute {
-		log.Println("[Cache Stale] Cache is stale")
+		log.Printf("[isCacheStale] Cache is stale (older than %d minutes)", refresh_timer)
 		return true
 	}
 	return false
 }
 
-// func fetchAndCacheFeed(feedURL string, cacheKey string) (FeedResponse, error) {
-// 	parser := gofeed.NewParser()
-// 	feed, err := parser.ParseURL(feedURL)
-// 	if err != nil {
-// 		log.WithFields(logrus.Fields{
-// 			"url":   feedURL,
-// 			"error": err,
-// 		}).Error("Failed to parse URL")
-// 		return FeedResponse{}, err
-// 	}
-
-// 	feedItems := processFeedItems(feed)
-// 	baseDomain := getBaseDomain(feed.Link)
-// 	addURLToList(feedURL)
-
-// 	baseDomainCacheKey := createHash(baseDomain)
-// 	var metaData link2json.MetaDataResponseItem
-
-// 	cacheMutex.Lock()
-// 	defer cacheMutex.Unlock()
-
-// 	if err := cache.Get(metaData_prefix, baseDomainCacheKey, &metaData); err != nil {
-// 		if isValidURL(baseDomain) {
-// 			tempMetaData, err := GetMetaData(baseDomain)
-// 			if err != nil {
-// 				log.Printf("Failed to get metadata for %s: %v", baseDomain, err)
-// 			} else {
-// 				metaData = tempMetaData
-// 				if err := cache.Set(metaData_prefix, baseDomainCacheKey, metaData, 24*time.Hour); err != nil {
-// 					log.Printf("Failed to cache metadata for %s: %v", baseDomain, err)
-// 				}
-// 			}
-// 		} else {
-// 			metaData = link2json.MetaDataResponseItem{}
-// 			log.Printf("[fetchAndCacheFeed] Invalid URL %s", baseDomain)
-// 		}
-// 	} else {
-// 		log.Printf("Loaded metadata from cache for %s", baseDomain)
-// 	}
-
-// 	response := createFeedResponse(feed, feedURL, metaData, feedItems)
-
-// 	if err := cache.Set(feed_prefix, cacheKey, response, 24*time.Hour); err != nil {
-// 		log.WithFields(logrus.Fields{
-// 			"url":   feedURL,
-// 			"error": err,
-// 		}).Error("Failed to cache feed details")
-// 		return FeedResponse{}, err
-// 	}
-
-// 	log.Infof("Successfully cached feed details for %s", feedURL)
-// 	return response, nil
-// }
-
-// fetchAndCacheFeed fetches a remote feed, merges with old items, and caches the final FeedResponse.
+// fetchAndCacheFeed fetches the remote feed from feedURL, merges with existing items (if any),
+// and caches the final FeedResponse. Returns the FeedResponse or an error if any step fails.
 func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 	parser := gofeed.NewParser()
 	feed, err := parser.ParseURL(feedURL)
 	if err != nil {
-		log.WithFields(logrus.Fields{"url": feedURL, "error": err}).
-			Error("Failed to parse URL")
+		log.WithFields(logrus.Fields{
+			"url":   feedURL,
+			"error": err,
+		}).Error("[fetchAndCacheFeed] Failed to parse feedURL")
 		return FeedResponse{}, err
 	}
 
-	// 1) Convert the newly fetched feed into a slice of items
+	// Convert newly fetched feed to items.
 	newItems := processFeedItems(feed)
 
-	// 2) Merge them with existing items (deduplicate, keep last 24h, update changed)
+	// Merge new items with existing items from the last 24 hours.
 	mergedItems, mergeErr := mergeFeedItemsAtParserLevel(feedURL, newItems)
 	if mergeErr != nil {
 		return FeedResponse{}, mergeErr
 	}
 
-	// 3) Build feed metadata
 	baseDomain := getBaseDomain(feed.Link)
-	addURLToList(feedURL) // track feed subscription or known feed
+	addURLToList(feedURL)
 
-	// Possibly fetch additional metadata from the cache
+	// Possibly fetch additional metadata from cache
 	var metaData link2json.MetaDataResponseItem
 
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
-	baseDomainKey := createHash(baseDomain)
 
+	baseDomainKey := createHash(baseDomain)
 	if err := cache.Get(metaData_prefix, baseDomainKey, &metaData); err != nil {
 		if isValidURL(baseDomain) {
 			tempMeta, errGet := GetMetaData(baseDomain)
 			if errGet != nil {
-				log.Printf("Failed to get metadata for %s: %v", baseDomain, errGet)
+				log.Printf("[fetchAndCacheFeed] Failed to get metadata for %s: %v", baseDomain, errGet)
 			} else {
 				metaData = tempMeta
 				if errSet := cache.Set(metaData_prefix, baseDomainKey, metaData, 24*time.Hour); errSet != nil {
-					log.Printf("Failed to cache metadata for %s: %v", baseDomain, errSet)
+					log.Printf("[fetchAndCacheFeed] Failed to cache metadata for %s: %v", baseDomain, errSet)
 				}
 			}
 		} else {
 			metaData = link2json.MetaDataResponseItem{}
-			log.Printf("[fetchAndCacheFeed] Invalid URL %s", baseDomain)
+			log.Printf("[fetchAndCacheFeed] Invalid baseDomain %s", baseDomain)
 		}
 	} else {
-		log.Printf("Loaded metadata from cache for %s", baseDomain)
+		log.Printf("[fetchAndCacheFeed] Loaded metadata from cache for %s", baseDomain)
 	}
 
-	// 4) Create final feed response with merged items
+	// Build final FeedResponse from the merged items
 	finalFeedResponse := createFeedResponse(feed, feedURL, metaData, mergedItems)
 
-	// 5) Cache the final feed response
+	// Cache the final feed response
 	if err := cache.Set(feed_prefix, cacheKey, finalFeedResponse, 24*time.Hour); err != nil {
 		log.WithFields(logrus.Fields{"url": feedURL, "error": err}).
-			Error("Failed to cache feed details")
+			Error("[fetchAndCacheFeed] Failed to cache feed details")
 		return FeedResponse{}, err
 	}
 
-	log.Infof("Successfully cached feed details for %s", feedURL)
+	log.Infof("[fetchAndCacheFeed] Successfully cached feed details for %s", feedURL)
 	return finalFeedResponse, nil
 }
 
+// processURL checks the cache for a feed URL; if found and not stale, returns the cached feed.
+// Otherwise, calls fetchAndCacheFeed to retrieve and cache a fresh feed. This is the main entry
+// point for retrieving feed data.
 func processURL(rawURL string) FeedResponse {
 	feedURL := sanitizeURL(rawURL)
 	cacheKey := feedURL
 
 	var cachedFeed FeedResponse
-	err := cache.Get(feed_prefix, cacheKey, &cachedFeed)
-	if err == nil && cachedFeed.SiteTitle != "" {
+	if err := cache.Get(feed_prefix, cacheKey, &cachedFeed); err == nil && cachedFeed.SiteTitle != "" {
 		// Cache hit
-		log.WithFields(logrus.Fields{
-			"url": feedURL,
-		}).Info("[Cache Hit] Using cached feed details")
+		log.WithFields(logrus.Fields{"url": feedURL}).
+			Info("[processURL] [Cache Hit] Using cached feed details")
 
 		// If feed is stale, refresh in background
 		if isCacheStale(cachedFeed.LastRefreshed) {
 			log.WithFields(logrus.Fields{"url": feedURL}).
-				Info("[Cache Stale] Cache is stale, refreshing in background")
+				Info("[processURL] Cache is stale, refreshing in background")
 			go func() {
-				_, errRefresh := fetchAndCacheFeed(feedURL, cacheKey)
-				if errRefresh != nil {
-					log.WithFields(logrus.Fields{"url": feedURL, "error": errRefresh}).
-						Error("Failed to refresh feed")
+				if _, errRefresh := fetchAndCacheFeed(feedURL, cacheKey); errRefresh != nil {
+					log.WithFields(logrus.Fields{
+						"url":   feedURL,
+						"error": errRefresh,
+					}).Error("[processURL] Failed to refresh feed in background")
 				}
 			}()
 		}
 
-		// Optionally re-check thumbnail colors
+		// Optionally re-check or skip thumbnail colors
 		updatedItems := updateFeedItemsWithThumbnailColors(cachedFeed.Items)
 		cachedFeed.Items = &updatedItems
 		return cachedFeed
 	}
 
-	// Cache miss or empty
+	// Cache miss or empty feed
 	log.WithFields(logrus.Fields{"url": feedURL}).
-		Info("[Cache Miss] Cache miss")
+		Info("[processURL] [Cache Miss] Fetching fresh feed")
 
 	newResp, errNew := fetchAndCacheFeed(feedURL, cacheKey)
 	if errNew != nil {
 		log.WithFields(logrus.Fields{"url": feedURL, "error": errNew}).
-			Error("Failed to fetch and cache feed")
+			Error("[processURL] Failed to fetch and cache feed")
 
 		return FeedResponse{
 			Type:    "unknown",
@@ -287,36 +253,46 @@ func processURL(rawURL string) FeedResponse {
 	}
 	return newResp
 }
+
+// updateFeedItemsWithThumbnailColors iterates over existing items in a feed,
+// calling updateThumbnailColorForItem to finalize or skip color checks.
 func updateFeedItemsWithThumbnailColors(items *[]FeedResponseItem) []FeedResponseItem {
+	if items == nil {
+		return nil
+	}
 	var updatedItems []FeedResponseItem
 	for _, item := range *items {
-		// Update the thumbnail color for each item
 		updatedItem := updateThumbnailColorForItem(item)
 		updatedItems = append(updatedItems, updatedItem)
 	}
 	return updatedItems
 }
+
+// updateThumbnailColorForItem checks if we have a cached color for the item’s thumbnail.
+// If so, sets item.ThumbnailColor. Otherwise, logs that color is not yet available.
 func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 	var cachedColor RGBColor
 	err := cache.Get(thumbnailColorPrefix, item.Thumbnail, &cachedColor)
 
 	switch {
 	case err != nil:
-		log.Printf("Thumbnail color not yet available for %s", item.Thumbnail)
+		log.Printf("[updateThumbnailColorForItem] No cached color for %s yet", item.Thumbnail)
 	case item.ThumbnailColorComputed == "set":
-		// log.Printf("Thumbnail color already set for %s: %v", item.Thumbnail, item.ThumbnailColor)
+		// Already set
+		// log.Printf("[updateThumbnailColorForItem] Color already set for %s: %v", item.Thumbnail, item.ThumbnailColor)
 	case item.ThumbnailColorComputed == "computed":
 		item.ThumbnailColor = cachedColor
 		item.ThumbnailColorComputed = "set"
-		log.Printf("Updated thumbnail color for %s: %v", item.Thumbnail, item.ThumbnailColor)
+		log.Printf("[updateThumbnailColorForItem] Updated color for %s: %v", item.Thumbnail, item.ThumbnailColor)
 	default:
-		// log.Printf("Thumbnail color already set for %s: %v", item.Thumbnail, item.ThumbnailColor)
+		// log.Printf("[updateThumbnailColorForItem] Unknown or already set")
 	}
-
 	return item
 }
+
+// processFeedItems validates feed, concurrency processes each item, returning a slice of FeedResponseItem.
 func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
-	// 1) Check if feed or feed.Items is nil/empty
+	// Safeguard feed == nil or feed.Items is nil/empty
 	if feed == nil {
 		log.Error("[processFeedItems] feed is nil; returning empty slice")
 		return nil
@@ -326,28 +302,24 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 		return nil
 	}
 
-	// 2) Initialize thumbnail and default color if iTunesExt image is present
 	thumbnail := ""
 	defaultThumbnailColor := RGBColor{128, 128, 128}
+	// If iTunes image is present, compute default color
 	if feed.ITunesExt != nil && feed.ITunesExt.Image != "" {
 		thumbnail = feed.ITunesExt.Image
 		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
 		defaultThumbnailColor = RGBColor{r, g, b}
 	}
 
-	// 3) Prepare concurrency
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, numWorkers)
 	itemResponses := make(chan FeedResponseItem, len(feed.Items))
 
-	// 4) Iterate over feed.Items
 	for _, item := range feed.Items {
-		// Skip nil items gracefully
 		if item == nil {
-			log.Warn("[processFeedItems] Encountered a nil item; skipping")
+			log.Warn("[processFeedItems] Skipping nil item")
 			continue
 		}
-
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(it *gofeed.Item) {
@@ -360,23 +332,21 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 		}(item)
 	}
 
-	// 5) Close channel after all goroutines finish
 	go func() {
 		wg.Wait()
 		close(itemResponses)
 	}()
 
-	// 6) Collect the responses and return
 	return collectItemResponses(itemResponses)
 }
 
+// processFeedItem creates a FeedResponseItem from a single gofeed.Item,
+// attempting to discover a thumbnail if not set, and sets a default or cached color.
 func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColor) FeedResponseItem {
-	Link := item.Link
-	Duration := 0
-
 	author := getItemAuthor(item)
 	categories := strings.Join(item.Categories, ", ")
 
+	// Possibly override the feed-level thumbnail with item enclosures
 	if len(item.Enclosures) > 0 {
 		for _, enclosure := range item.Enclosures {
 			if enclosure.URL != "" && strings.HasPrefix(enclosure.Type, "image/") {
@@ -385,66 +355,64 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 			}
 		}
 	}
-
-	if thumbnail == "" && item.Image != nil {
+	if thumbnail == "" && item.Image != nil && item.Image.URL != "" {
 		thumbnail = item.Image.URL
 	}
-
 	if item.ITunesExt != nil && item.ITunesExt.Image != "" {
 		thumbnail = item.ITunesExt.Image
 	}
 
-	thumbnailFinder := NewThumbnailFinder()
-
+	// Attempt to discover a thumbnail from content if still empty
 	if thumbnail == "" {
-		thumbnail = thumbnailFinder.FindThumbnailForItem(item)
+		finder := NewThumbnailFinder()
+		discovered := finder.FindThumbnailForItem(item)
+		if discovered != "" {
+			thumbnail = discovered
+		}
 	}
 
-	// Initialize thumbnail color to default
 	thumbnailColorComputed := "no"
-
-	// Check if the thumbnail color is already cached
-	cachePrefix := thumbnailColor_prefix
+	// If thumbnail color is cached, set it directly; otherwise compute async
 	var cachedColor RGBColor
 	cacheMutex.Lock()
-	err := cache.Get(cachePrefix, thumbnail, &cachedColor)
+	err := cache.Get(thumbnailColor_prefix, thumbnail, &cachedColor)
 	cacheMutex.Unlock()
 	if err == nil {
-		// Use the cached color
 		thumbnailColor = cachedColor
 		thumbnailColorComputed = "set"
 	} else {
-		go func(thumbnailURL string) {
-			if thumbnailURL != "" {
-				r, g, b := extractColorFromThumbnail_prominentColor(thumbnailURL)
-				actualColor := RGBColor{r, g, b}
-				// log.Printf("Asynchronously extracted color for %s: %v", thumbnailURL, actualColor)
-				if err := cache.Set(thumbnailColorPrefix, thumbnailURL, actualColor, 24*time.Hour); err != nil {
-					log.Printf("Failed to cache color for %s: %v", thumbnailURL, err)
-				} else {
-					// log.Printf("Successfully cached color for %s", thumbnailURL)
-				}
+		// Async compute if not cached
+		go func(thURL string) {
+			if thURL == "" {
+				return
+			}
+			r, g, b := extractColorFromThumbnail_prominentColor(thURL)
+			actualColor := RGBColor{r, g, b}
+			if cErr := cache.Set(thumbnailColor_prefix, thURL, actualColor, 24*time.Hour); cErr != nil {
+				log.Printf("[processFeedItem] Failed to cache color for %s: %v", thURL, cErr)
 			}
 		}(thumbnail)
 	}
 
-	description := item.Description
-	if description == "" {
-		description = parseHTMLContent(item.Content)
+	desc := item.Description
+	if desc == "" {
+		desc = parseHTMLContent(item.Content)
 	}
-	description = parseHTMLContent(description)
+	desc = parseHTMLContent(desc)
 
+	// Standardize item published date
 	standardizedPublished := standardizeDate(item.Published)
-	itemType, duration := determineItemTypeAndDuration(item)
-	Duration = duration
 
-	responseItem := FeedResponseItem{
+	// Identify if it's a podcast and parse duration if so
+	itemType, duration := determineItemTypeAndDuration(item)
+
+	return FeedResponseItem{
 		Type:                   itemType,
 		ID:                     createHash(item.Link),
 		Title:                  item.Title,
-		Description:            description,
-		Link:                   Link,
-		Duration:               Duration,
+		Description:            desc,
+		Link:                   item.Link,
+		Duration:               duration,
 		Author:                 author,
 		Published:              standardizedPublished,
 		Created:                standardizedPublished,
@@ -456,16 +424,15 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 		ThumbnailColor:         thumbnailColor,
 		ThumbnailColorComputed: thumbnailColorComputed,
 	}
-
-	return responseItem
 }
 
+// standardizeDate parses dateStr in various known formats (RFC3339, RFC1123, etc.).
+// Returns the date in a standard layout or empty if parse fails.
 func standardizeDate(dateStr string) string {
 	if dateStr == "" {
-		log.Info("[Standardize Date] Received empty date string")
+		log.Info("[standardizeDate] Empty date string")
 		return ""
 	}
-
 	const outputLayout = "2006-01-02T15:04:05Z07:00"
 	dateFormats := []string{
 		time.RFC1123,
@@ -476,26 +443,23 @@ func standardizeDate(dateStr string) string {
 		time.ANSIC,
 		"Mon, 02 Jan 2006 15:04:05 -0700",
 	}
-
 	for _, layout := range dateFormats {
 		if parsedTime, err := time.Parse(layout, dateStr); err == nil {
 			return parsedTime.Format(outputLayout)
 		}
 	}
-
-	log.Infof("[Standardize Date] Failed to parse date: %v", dateStr)
+	log.Infof("[standardizeDate] Failed to parse date: %v", dateStr)
 	return ""
 }
 
+// createFeedResponse builds a FeedResponse struct from a parsed feed object, feed metadata, and items.
 func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData link2json.MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
-	var feedType string
-	var thumbnail string
-
 	if feed == nil {
-		log.Println("createFeedResponse: feed is nil for", feedURL)
+		log.Errorf("[createFeedResponse] feed is nil for %s", feedURL)
 		return FeedResponse{}
 	}
 
+	var feedType, thumbnail string
 	if feed.ITunesExt != nil {
 		feedType = "podcast"
 		if feed.Image != nil && feed.Image.URL != "" {
@@ -535,57 +499,61 @@ func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData link2json.Me
 	}
 }
 
+// collectResponses reads FeedResponse objects from a channel, returning them as a slice.
 func collectResponses(responses chan FeedResponse) []FeedResponse {
-	var allResponses []FeedResponse
-	for response := range responses {
-		allResponses = append(allResponses, response)
+	var all []FeedResponse
+	for resp := range responses {
+		all = append(all, resp)
 	}
-	return allResponses
+	return all
 }
 
+// collectItemResponses reads FeedResponseItem objects from a channel, returning them as a slice.
+// The items are then sorted by descending Published date.
 func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseItem {
 	var feedItems []FeedResponseItem
 	for itemResponse := range itemResponses {
 		feedItems = append(feedItems, itemResponse)
 	}
-
+	// Sort by published date (descending)
 	sort.Slice(feedItems, func(i, j int) bool {
 		timeI, errI := time.Parse(layout, feedItems[i].Published)
 		if errI != nil {
-			log.Printf("[Sort] Failed to parse time for item I: %v", errI)
+			log.Printf("[collectItemResponses] Failed to parse time for item I: %v", errI)
 			return false
 		}
 		timeJ, errJ := time.Parse(layout, feedItems[j].Published)
 		if errJ != nil {
-			log.Printf("[Sort] Failed to parse time for item J: %v", errJ)
+			log.Printf("[collectItemResponses] Failed to parse time for item J: %v", errJ)
 			return true
 		}
 		return timeI.After(timeJ)
 	})
-
 	return feedItems
 }
 
+// sendResponse writes a JSON-encoded Feeds struct to the ResponseWriter.
 func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 
 	feeds := Feeds{Feeds: responses}
-
 	if err := enc.Encode(feeds); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		log.Errorf("[sendResponse] Failed to encode feed responses: %v", err)
 	}
 }
 
+// refreshFeeds retrieves all known feed URLs from the cache and re-processes them
+// (useful for cron-based or ticker-based refreshing).
 func refreshFeeds() {
 	urls := getAllCachedURLs()
-
 	for _, url := range urls {
-		log.Printf("Refreshing feed for URL: %s", url)
-		_ = processURL(url)
+		log.Printf("[refreshFeeds] Refreshing feed for URL: %s", url)
+		_ = processURL(url) // ignore the returned response
 	}
 }
 
+// addURLToList ensures the feed URL is tracked in urlList (the list of subscribed or known feeds).
 func addURLToList(url string) {
 	urlListMutex.Lock()
 	defer urlListMutex.Unlock()
@@ -595,6 +563,8 @@ func addURLToList(url string) {
 	}
 }
 
+// getAllCachedURLs returns all known feed URLs from the cache or from an in-memory list.
+// If none are found, returns an empty slice.
 func getAllCachedURLs() []string {
 	urlListMutex.Lock()
 	defer urlListMutex.Unlock()
@@ -605,43 +575,44 @@ func getAllCachedURLs() []string {
 		var err error
 		urlList, err = cache.GetSubscribedListsFromCache(feed_prefix)
 		if err != nil {
-			log.Println("Failed to get subscribed lists from cache:", err)
+			log.Warnf("[getAllCachedURLs] Failed to get subscribed feeds from cache: %v", err)
 			return nil
 		}
 
 		duration := time.Since(startTime)
-		log.Infof("Loaded urlList from cache: %v", urlList)
-		log.Infof("Time taken to load urlList: %v", duration)
+		log.Infof("[getAllCachedURLs] Loaded urlList from cache: %v, took %v", urlList, duration)
 	}
 
+	// return a copy
 	return append([]string(nil), urlList...)
 }
 
+// isValidURL checks if str is a syntactically valid URL with a resolvable host or IP.
 func isValidURL(str string) bool {
 	parsedURL, err := url.ParseRequestURI(str)
 	if err != nil {
 		logrus.Info(err.Error())
 		return false
 	}
-
 	host := parsedURL.Hostname()
 	if net.ParseIP(host) != nil {
 		return true
 	}
-
 	return strings.Contains(host, ".")
 }
 
+// sanitizeURL ensures URLs always use https:// if no scheme or if http://
 func sanitizeURL(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil || parsedURL.Scheme == "" {
-		rawURL = "https://" + rawURL
+		return "https://" + rawURL
 	} else if parsedURL.Scheme == "http" {
-		rawURL = strings.Replace(rawURL, "http://", "https://", 1)
+		return strings.Replace(rawURL, "http://", "https://", 1)
 	}
 	return rawURL
 }
 
+// getItemAuthor returns an item’s author if set, checking iTunesExt first (for podcasts).
 func getItemAuthor(item *gofeed.Item) string {
 	if item.ITunesExt != nil && item.ITunesExt.Author != "" {
 		return item.ITunesExt.Author
@@ -652,24 +623,27 @@ func getItemAuthor(item *gofeed.Item) string {
 	return ""
 }
 
+// determineItemTypeAndDuration checks if the feed item is a podcast. If yes,
+// parses the item’s duration. Returns a type (podcast or article) and the duration in seconds.
 func determineItemTypeAndDuration(item *gofeed.Item) (string, int) {
 	if item.ITunesExt != nil {
-		itemType := "podcast"
-		duration := parseDuration(item.ITunesExt.Duration)
-		return itemType, duration
+		return "podcast", parseDuration(item.ITunesExt.Duration)
 	}
 	return "article", 0
 }
 
+// parseDuration attempts to convert a time-like string (e.g., 3600 or HH:MM:SS) into total seconds.
 func parseDuration(durationStr string) int {
 	if durationStr == "" {
 		return 0
 	}
 
+	// Try integer first
 	if durationInt, err := strconv.Atoi(durationStr); err == nil {
 		return durationInt
 	}
 
+	// Possibly HH:MM:SS or MM:SS
 	parts := strings.Split(durationStr, ":")
 	switch len(parts) {
 	case 3:
@@ -686,6 +660,7 @@ func parseDuration(durationStr string) int {
 	}
 }
 
+// stringInSlice returns true if str is found in the slice list.
 func stringInSlice(str string, list []string) bool {
 	for _, v := range list {
 		if v == str {
@@ -695,67 +670,65 @@ func stringInSlice(str string, list []string) bool {
 	return false
 }
 
-// Cache merging logic
-// mergeFeedItemsAtParserLevel merges old items from the cache with newly fetched items.
-// We only keep items from the last 24 hours, deduplicate by GUID, and update changed content.
+// mergeFeedItemsAtParserLevel merges old items from the cache with newly fetched items, deduplicating by ID
+// and retaining only items from within the last 24 hours (cachePeriod). Also updates items if content changed.
 func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([]FeedResponseItem, error) {
-	cacheKey := feedURL // or any unique suffix for the feed items
-	var existingItems []FeedResponseItem
+	// The feedResponse is stored under feed_prefix:feedURL
+	cacheKey := feedURL
 	var existingFeedResponse FeedResponse
+	var existingItems []FeedResponseItem
 
-	// 1) Fetch existing items from cache if available
+	// Attempt to get an existing feed from the cache
 	if err := cache.Get(feed_prefix, cacheKey, &existingFeedResponse); err != nil {
-
-		log.Errorf("Error getting existing items for feed %s: %v", feedURL, err)
-		// treat as empty if it's a non-fatal error
-
+		log.Errorf("[mergeFeedItemsAtParserLevel] Error getting existing items for feed %s: %v", feedURL, err)
 		existingItems = nil
 	} else {
-		existingItems = *existingFeedResponse.Items
-		log.Print("Existing items fetched")
+		// We have existing feed items
+		if existingFeedResponse.Items != nil {
+			existingItems = *existingFeedResponse.Items
+			log.Printf("[mergeFeedItemsAtParserLevel] Found %d existing items for feed %s", len(existingItems), feedURL)
+		}
 	}
 
-	// 2) Convert existing items into a map (GUID -> FeedResponseItem) for easy dedup
+	// Convert existing items into a map by ID (GUID).
 	itemMap := make(map[string]FeedResponseItem)
-	// only keep items from last 24h
-	log.Printf("Merging %d existing items with %d new items", len(existingItems), len(newItems))
+	log.Printf("[mergeFeedItemsAtParserLevel] Merging %d existing items with %d new items", len(existingItems), len(newItems))
 	for _, oldItem := range existingItems {
 		if isWithinPeriod(oldItem, cachePeriod) {
 			itemMap[oldItem.ID] = oldItem
 		}
 	}
 
-	log.Print("Existing items map created")
-
-	// 3) Merge new items
+	// Merge new items
 	for _, newIt := range newItems {
 		if oldIt, found := itemMap[newIt.ID]; found {
-			// item with same GUID found, check if updated
+			// existing item found by GUID
 			if isUpdatedContent(oldIt, newIt) {
 				itemMap[newIt.ID] = newIt
 			}
 		} else {
-			// new item -> keep only if within time period
+			// item is new; only keep if within last N days
 			if isWithinPeriod(newIt, cachePeriod) {
 				itemMap[newIt.ID] = newIt
 			}
 		}
 	}
 
-	// 4) Convert map back to slice
+	// Convert map back to slice
 	merged := make([]FeedResponseItem, 0, len(itemMap))
 	for _, v := range itemMap {
 		merged = append(merged, v)
 	}
 
-	// 5) Store merged items back to the cache
+	// Store merged items in the cache so subsequent fetches have the updated items
 	if err := cache.Set(feed_prefix, feedURL, merged, 24*time.Hour); err != nil {
 		return nil, err
 	}
+
 	return merged, nil
 }
 
-// isWithinPeriod checks if the item was published within the configurable period.
+// isWithinPeriod returns true if the FeedResponseItem’s Published date is within 'days' days of now.
 func isWithinPeriod(item FeedResponseItem, days int) bool {
 	t, err := time.Parse(layout, item.Published)
 	if err != nil {
@@ -764,7 +737,8 @@ func isWithinPeriod(item FeedResponseItem, days int) bool {
 	return time.Since(t) <= time.Duration(days)*24*time.Hour
 }
 
-// isUpdatedContent decides if new item is "more recent" or has changed content.
+// isUpdatedContent returns true if newIt is more recent than oldIt by published date
+// or if newIt’s content differs from oldIt’s content.
 func isUpdatedContent(oldIt, newIt FeedResponseItem) bool {
 	oldTime, _ := time.Parse(layout, oldIt.Published)
 	newTime, _ := time.Parse(layout, newIt.Published)
@@ -773,7 +747,7 @@ func isUpdatedContent(oldIt, newIt FeedResponseItem) bool {
 	if newTime.After(oldTime) {
 		return true
 	}
-	// or if content changed
+	// If content changed
 	if newIt.Content != oldIt.Content {
 		return true
 	}
