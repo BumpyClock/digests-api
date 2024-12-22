@@ -64,39 +64,6 @@ func getBaseDomain(rawURL string) string {
 	return parsedURL.Scheme + "://" + parsedURL.Host
 }
 
-// parseHandler is an HTTP handler for the /parse endpoint,
-// expecting a POST request with a JSON body of feed URLs to parse,
-// plus optional pagination parameters (Page, ItemsPerPage).
-func parseHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Default values for pagination
-	page := 1
-	itemsPerPage := 50
-
-	// Decode request into ParseRequest
-	req, err := decodeRequest(r)
-	if err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	// If user provided a page > 0, use it; otherwise keep default
-	if req.Page > 0 {
-		page = req.Page
-	}
-	// If user provided itemsPerPage > 0, use it; otherwise keep default
-	if req.ItemsPerPage > 0 {
-		itemsPerPage = req.ItemsPerPage
-	}
-
-	responses := processURLs(req.URLs, page, itemsPerPage)
-	sendResponse(w, responses)
-}
-
 // decodeRequest reads and unmarshals the request body into a ParseRequest object.
 func decodeRequest(r *http.Request) (ParseRequest, error) {
 	var req ParseRequest
