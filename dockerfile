@@ -1,56 +1,63 @@
-# Start from the latest golang base image
-FROM golang:1.23 
-# Add Maintainer Info
-LABEL maintainer="Aditya Sharma <aditya@adityasharma.net>"
+# ---------- Builder Stage ----------
+    FROM golang:1.23 AS builder
 
-# Install necessary packages
-RUN apt-get update && apt-get install -y \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
-    libxtst6 \
-    fonts-liberation \
-    libappindicator3-1 \
-    libasound2 \
-    chromium
-
-# Set environment variables for Chromium
-ENV CHROMEDP_EXEC_PATH=/usr/bin/chromium
-
-ENV GOOGLE_APPLICATION_CREDENTIALS=/credentials/credentials.json
-
-
-# Set the Current Working Directory inside the container
-WORKDIR /app
-
-# Copy go mod and sum files
-COPY src/go.mod src/go.sum ./
-
-# Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
-RUN go mod download
-
-# Copy the source from the current directory to the Working Directory inside the container
-COPY src/ .
-
-# Build the Go app
-RUN go build -o main .
-
-
-
-
-# Expose port 8000
-EXPOSE 8000
-
-
-# Command to run the executable
-CMD ["./main", "--redis", "redis:6379"]
+    # Create and switch to the /app directory
+    WORKDIR /app
+    
+    # Copy go.mod and go.sum first and download dependencies
+    COPY src/go.mod src/go.sum ./
+    RUN go mod download
+    
+    # Copy the remaining source code
+    COPY src/ .
+    
+    # Build the Go app (static binary if possible)
+    RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+    
+    # ---------- Final Stage ----------
+    FROM debian:stable-slim
+    
+    # Install necessary packages for Chromium
+    RUN apt-get update && apt-get install -y --no-install-recommends \
+        libnss3 \
+        libatk-bridge2.0-0 \
+        libgtk-3-0 \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxi6 \
+        libxrandr2 \
+        libxrender1 \
+        libxss1 \
+        libxtst6 \
+        fonts-liberation \
+        libappindicator3-1 \
+        libasound2 \
+        chromium \
+        # Clean up apt caches to reduce image size
+        && apt-get clean && rm -rf /var/lib/apt/lists/*
+    
+    # Set environment variables for Chromium
+    ENV CHROMEDP_EXEC_PATH=/usr/bin/chromium
+    
+    # Set environment variable for GCP credentials
+    ENV GOOGLE_APPLICATION_CREDENTIALS=/credentials/credentials.json
+    
+    # Create and switch to the /app directory
+    WORKDIR /app
+    
+    # Copy only the compiled binary from the builder stage
+    COPY --from=builder /app/main .
+    
+    # If you need credentials.json inside the container, copy it in.
+    # (If you mount credentials in production, you can remove this line.)
+    # COPY src/credentials.json /credentials/credentials.json
+    
+    # Expose port 8000
+    EXPOSE 8000
+    
+    # Command to run the executable
+    CMD ["./main", "--redis", "redis:6379"]
