@@ -21,11 +21,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	httpClient = &http.Client{Timeout: 20 * time.Second}
-	cacheMutex = &sync.Mutex{}
-)
-
 const layout = "2006-01-02T15:04:05Z07:00"
 
 func createHash(s string) string {
