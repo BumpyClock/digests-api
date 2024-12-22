@@ -65,6 +65,7 @@ type FeedResponse struct {
 	Author        *gofeed.Person      `json:"author"`
 	Language      string              `json:"language"`
 	Favicon       string              `json:"favicon"`
+	SiteImage     string              `json:"siteImage,omitempty"`
 	Categories    string              `json:"categories"`
 	Items         *[]FeedResponseItem `json:"items,omitempty"`
 }
