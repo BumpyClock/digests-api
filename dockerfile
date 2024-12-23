@@ -37,6 +37,7 @@
         libappindicator3-1 \
         libasound2 \
         chromium \
+        ca-certificates \
         # Clean up apt caches to reduce image size
         && apt-get clean && rm -rf /var/lib/apt/lists/*
     
