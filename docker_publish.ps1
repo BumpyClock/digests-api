@@ -1,1 +1,1 @@
-docker buildx build --platform linux/amd64,linux/arm64 -t bumpyclock/digests-api:latest --push --progress=plain .
+docker buildx build --platform linux/amd64,linux/arm64 -t bumpyclock/digests-api:latest --push  .

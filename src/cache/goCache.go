@@ -1,3 +1,4 @@
+// Package digestsCache provides caching implementations.
 package digestsCache
 
 import (
@@ -40,7 +41,7 @@ func (c *GoCache) Get(prefix string, key string, dest interface{}) error {
 	if !found {
 		log.WithFields(logrus.Fields{
 			"key": key,
-		}).Error("Key not found in cache")
+		}).Info("Key not found in cache")
 		return ErrCacheMiss
 	}
 

@@ -1,3 +1,4 @@
+// Package digestsCache provides caching implementations.
 package digestsCache
 
 import "time"

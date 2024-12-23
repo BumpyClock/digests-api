@@ -1,3 +1,4 @@
+// Package models defines the data structures used in the application.
 package main
 
 import (
@@ -5,8 +6,11 @@ import (
 )
 
 // ParseRequest represents the expected incoming JSON payload structure.
+// ParseRequest represents the expected JSON body for the /parse endpoint.
 type ParseRequest struct {
-	URLs []string `json:"urls"`
+	URLs         []string `json:"urls"`
+	Page         int      `json:"page"`
+	ItemsPerPage int      `json:"itemsperpage"`
 }
 
 type RGBColor struct {
@@ -29,23 +33,24 @@ type ExtendedItem struct {
 
 // FeedResponseItem represents an enriched structure for an individual feed item.
 type FeedResponseItem struct {
-	Type            string                      `json:"type"`
-	ID              string                      `json:"id"`
-	Title           string                      `json:"title"`
-	Description     string                      `json:"description"`
-	Link            string                      `json:"link"`
-	Author          string                      `json:"author"`
-	Published       string                      `json:"published"`
-	Content         string                      `json:"content"`
-	Created         string                      `json:"created"`
-	Content_Encoded string                      `json:"content_encoded"`
-	Categories      string                      `json:"categories"`
-	Enclosures      []*gofeed.Enclosure         `json:"enclosures"`
-	Thumbnail       string                      `json:"thumbnail"`
-	ThumbnailColor  RGBColor                    `json:"thumbnailColor"`
-	EpisodeType     string                      `json:"episodeType,omitempty"`
-	Subtitle        []PodcastTranscriptsDetails `json:"subtitle,omitempty"`
-	Duration        int                         `json:"duration,omitempty"`
+	Type                   string                      `json:"type"`
+	ID                     string                      `json:"id"`
+	Title                  string                      `json:"title"`
+	Description            string                      `json:"description"`
+	Link                   string                      `json:"link"`
+	Author                 string                      `json:"author"`
+	Published              string                      `json:"published"`
+	Content                string                      `json:"content"`
+	Created                string                      `json:"created"`
+	Content_Encoded        string                      `json:"content_encoded"`
+	Categories             string                      `json:"categories"`
+	Enclosures             []*gofeed.Enclosure         `json:"enclosures"`
+	Thumbnail              string                      `json:"thumbnail"`
+	ThumbnailColor         RGBColor                    `json:"thumbnailColor"`
+	ThumbnailColorComputed string                      `json:"thumbnailColorComputed"`
+	EpisodeType            string                      `json:"episodeType,omitempty"`
+	Subtitle               []PodcastTranscriptsDetails `json:"subtitle,omitempty"`
+	Duration               int                         `json:"duration,omitempty"`
 }
 
 // FeedResponse represents the structure for the overall feed, including metadata and items.
@@ -204,6 +209,71 @@ type TTSRequest struct {
 	Url          string `json:"url"`
 }
 
+// MetaData Items
+type MetaDataResponseItem struct {
+	Title       string      `json:"title"`
+	Description string      `json:"description"`
+	Images      []WebMedia  `json:"images"`
+	Type        string      `json:"type"`
+	Sitename    string      `json:"sitename"`
+	Favicon     string      `json:"favicon"`
+	Duration    int         `json:"duration"`
+	Domain      string      `json:"domain"`
+	URL         string      `json:"url"`
+	Videos      []WebMedia  `json:"videos"`
+	Locale      string      `json:"locale,omitempty"`
+	Determiner  string      `json:"determiner,omitempty"`
+	Raw         interface{} `json:"raw,omitempty"`
+	ThemeColor  string      `json:"themeColor,omitempty"`
+}
+
+// WebMedia captures info about images/videos, including optional metadata.
+type WebMedia struct {
+	URL         string   `json:"url"`
+	Alt         string   `json:"alt,omitempty"`
+	Type        string   `json:"type,omitempty"`
+	Width       int      `json:"width,omitempty"`
+	Height      int      `json:"height,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	SecureURL   string   `json:"secure_url,omitempty"`
+	Duration    int      `json:"duration,omitempty"`
+	ReleaseDate string   `json:"release_date,omitempty"`
+}
+
+// Urls represents a list of URLs in a JSON payload.
+type Urls struct {
+	Urls []string `json:"urls"`
+}
+
+// FeedResult represents the result of discovering an RSS feed for a URL.
+type FeedResult struct {
+	URL      string `json:"url"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+	FeedLink string `json:"feedLink"`
+}
+
+// createShareRequest represents the expected JSON body for the /create endpoint.
+type createShareRequest struct {
+	Urls []string `json:"urls"`
+}
+
+// fetchShareRequest represents the expected JSON body for the /share endpoint.
+type fetchShareRequest struct {
+	Key string `json:"key"`
+}
+
+// URLValidationRequest represents the request format for URL validation
+type URLValidationRequest struct {
+	URLs []string `json:"urls"`
+}
+
+// URLStatus represents the status of a single URL validation
+type URLStatus struct {
+	URL    string `json:"url"`
+	Status string `json:"status"`
+}
+
 // CONSTANTS
 
 const redis_password = ""
@@ -219,10 +289,3 @@ const audio_prefix = "tts:"
 const DefaultRed = uint8(128)
 const DefaultGreen = uint8(128)
 const DefaultBlue = uint8(128)
-
-// const thumbnailColorPrefix = "thumbnailColor_"
-
-// var colorComputeSemaphore = make(chan struct{}, numWorkers)
-
-// const redis_feedsItems_key = "feedsItems"
-// const redis_feedDetails_key = "feedDetails"

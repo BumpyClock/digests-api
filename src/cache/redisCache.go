@@ -1,3 +1,4 @@
+// Package digestsCache provides caching implementations.
 package digestsCache
 
 import (
@@ -71,6 +72,12 @@ func (cache *RedisCache) Set(prefix string, key string, value interface{}, expir
 func (cache *RedisCache) Get(prefix string, key string, dest interface{}) error {
 	val, err := cache.handler.JSONGet(prefix+":"+key, ".")
 	if err != nil {
+		if err == redis.Nil {
+			log.WithFields(logrus.Fields{
+				"key": key,
+			}).Info("Key not found in Redis")
+			return ErrCacheMiss // Use the common ErrCacheMiss
+		}
 		log.WithFields(logrus.Fields{
 			"key": key,
 		}).Error("Failed to get key from Redis")

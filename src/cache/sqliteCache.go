@@ -1,3 +1,4 @@
+// Package digestsCache provides caching implementations.
 package digestsCache
 
 import (
@@ -25,6 +26,11 @@ func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
 		return nil, err
 	}
 
+	// Enable WAL mode for better performance
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		logrus.WithError(err).Error("Failed to enable WAL mode")
+	}
+
 	// Create the cache table if it doesn't exist
 	schema := `
 	CREATE TABLE IF NOT EXISTS cache (
@@ -32,6 +38,7 @@ func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
 		data TEXT NOT NULL,
 		expiration INTEGER NOT NULL
 	);
+	CREATE INDEX IF NOT EXISTS idx_expiration ON cache (expiration);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		logrus.WithField("error", err).Error("Failed to create cache table in SQLite")
@@ -60,6 +67,14 @@ func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expirati
 		expirationUnix = time.Now().AddDate(10, 0, 0).Unix()
 	}
 
+	// Use a transaction for better performance
+	tx, err := c.db.Begin()
+	if err != nil {
+		logrus.WithError(err).Error("Failed to begin transaction")
+		return err
+	}
+	defer tx.Rollback() // Rollback is safe to call even if the transaction was committed
+
 	stmt := `
 	INSERT INTO cache(id, data, expiration)
 	VALUES(?, ?, ?)
@@ -68,12 +83,17 @@ func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expirati
 		expiration=excluded.expiration;
 	`
 
-	_, err = c.db.Exec(stmt, fullKey, valBytes, expirationUnix)
+	_, err = tx.Exec(stmt, fullKey, valBytes, expirationUnix)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"key":   fullKey,
 			"error": err,
 		}).Error("Failed to set key in SQLite cache")
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		logrus.WithError(err).Error("Failed to commit transaction")
 		return err
 	}
 
@@ -87,11 +107,11 @@ func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 
 	stmt := `
 	SELECT data, expiration FROM cache
-	WHERE id = ?
+	WHERE id = ? AND expiration > ?
 	LIMIT 1;
 	`
 
-	row := c.db.QueryRow(stmt, fullKey)
+	row := c.db.QueryRow(stmt, fullKey, time.Now().Unix())
 
 	var (
 		data       []byte
@@ -99,23 +119,17 @@ func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 	)
 	err := row.Scan(&data, &expiration)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			logrus.WithFields(logrus.Fields{
+				"key": fullKey,
+			}).Debug("Key not found in SQLite cache")
+			return ErrCacheMiss
+		}
 		logrus.WithFields(logrus.Fields{
 			"key":   fullKey,
 			"error": err,
 		}).Error("Failed to read key from SQLite cache")
-		return ErrCacheMiss
-	}
-
-	// Check expiration
-	if time.Now().Unix() > expiration {
-		// Key is expired; remove it
-		deleteStmt := `DELETE FROM cache WHERE id = ?;`
-		_, _ = c.db.Exec(deleteStmt, fullKey)
-
-		logrus.WithFields(logrus.Fields{
-			"key": fullKey,
-		}).Info("Key expired in SQLite cache")
-		return ErrCacheMiss
+		return err
 	}
 
 	// Unmarshal data into dest
@@ -135,10 +149,10 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 	var urls []string
 
 	stmt := `
-	SELECT id, data, expiration FROM cache
-	WHERE id LIKE ?;
+	SELECT id, data FROM cache
+	WHERE id LIKE ? AND expiration > ?;
 	`
-	rows, err := c.db.Query(stmt, prefix+":%")
+	rows, err := c.db.Query(stmt, prefix+":%", time.Now().Unix())
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"error": err,
@@ -149,22 +163,13 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 
 	for rows.Next() {
 		var (
-			fullKey    string
-			data       []byte
-			expiration int64
+			fullKey string
+			data    []byte
 		)
-		if err := rows.Scan(&fullKey, &data, &expiration); err != nil {
+		if err := rows.Scan(&fullKey, &data); err != nil {
 			logrus.WithFields(logrus.Fields{
 				"error": err,
 			}).Error("Failed to scan SQLite cache row")
-			continue
-		}
-
-		// Check expiration
-		if time.Now().Unix() > expiration {
-			// Key is expired; remove it
-			deleteStmt := `DELETE FROM cache WHERE id = ?;`
-			_, _ = c.db.Exec(deleteStmt, fullKey)
 			continue
 		}
 
@@ -197,7 +202,7 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
 	var existingItems []FeedItem
 	err := c.Get(prefix, key, &existingItems)
-	if err != nil && !errors.Is(err, ErrCacheMiss) && !errors.Is(err, ErrCacheMiss) {
+	if err != nil && !errors.Is(err, ErrCacheMiss) && !errors.Is(err, ErrSQLCacheMiss) {
 		return err
 	}
 

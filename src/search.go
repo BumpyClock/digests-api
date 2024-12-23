@@ -1,3 +1,4 @@
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -10,9 +11,16 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
-// createRSSSearchResponse converts an array of FeedSearchAPIResponseItem to an array of FeedSearchResponseItem
+/**
+ * @function createRSSSearchResponse
+ * @description Converts an array of FeedSearchAPIResponseItem to an array of FeedSearchResponseItem.
+ * @param {[]FeedSearchAPIResponseItem} apiResults The array of FeedSearchAPIResponseItem to convert.
+ * @returns {[]FeedSearchResponseItem} The converted array of FeedSearchResponseItem.
+ */
 func createRSSSearchResponse(apiResults []FeedSearchAPIResponseItem) []FeedSearchResponseItem {
 	var responseItems []FeedSearchResponseItem
 	for _, item := range apiResults {
@@ -35,6 +43,12 @@ func createRSSSearchResponse(apiResults []FeedSearchAPIResponseItem) []FeedSearc
 	return responseItems
 }
 
+/**
+ * @function createPodcastSearchResponse
+ * @description Converts an array of PodcastAPIResponseItem to an array of PodcastSearchResponseItem.
+ * @param {[]PodcastAPIResponseItem} apiResults The array of PodcastAPIResponseItem to convert.
+ * @returns {[]PodcastSearchResponseItem} The converted array of PodcastSearchResponseItem.
+ */
 func createPodcastSearchResponse(apiResults []PodcastAPIResponseItem) []PodcastSearchResponseItem {
 	var responseItems []PodcastSearchResponseItem
 	for _, item := range apiResults {
@@ -56,27 +70,45 @@ func createPodcastSearchResponse(apiResults []PodcastAPIResponseItem) []PodcastS
 	return responseItems
 }
 
+/**
+ * @function searchRSS
+ * @description Searches for RSS feeds matching a given URL using an external API.
+ *              It caches the results for 24 hours.
+ * @param {string} queryURL The URL to search for.
+ * @returns {[]FeedSearchResponseItem} An array of FeedSearchResponseItem representing the search results.
+ * @dependencies createHash, cache, httpClient, log
+ */
 func searchRSS(queryURL string) []FeedSearchResponseItem {
 
-	log.Println("Search request received for URL: ", queryURL)
+	log.WithFields(logrus.Fields{
+		"queryURL": queryURL,
+	}).Info("[searchRSS] Search request received")
 	queryURLCacheKey := createHash(queryURL)
 
 	// Check the cache if the URL has been searched before
 	var cachedResults []FeedSearchResponseItem
 	if err := cache.Get(feedsearch_prefix, queryURLCacheKey, &cachedResults); err == nil {
-		log.Println("Cache hit for URL: ", queryURL)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+		}).Info("[searchRSS] Cache hit")
 		return cachedResults
 	} else {
-		log.Println("Cache miss for URL: ", queryURL)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+		}).Info("[searchRSS] Cache miss")
 	}
 
 	// Construct the external API URL
 	apiURL := "https://feedsearch.dev/api/v1/search?url=" + url.QueryEscape(queryURL)
 
 	// Make the request to the external API
-	resp, err := http.Get(apiURL)
+	resp, err := httpClient.Get(apiURL)
 	if err != nil {
-		log.Println("Error making request to external API: ", err)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+			"apiURL":   apiURL,
+			"error":    err,
+		}).Error("[searchRSS] Error making request to external API")
 		return nil
 	}
 	defer resp.Body.Close()
@@ -84,7 +116,11 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 	// Read the response from the external API
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Println("Error reading response from external API: ", err)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+			"apiURL":   apiURL,
+			"error":    err,
+		}).Error("[searchRSS] Error reading response from external API")
 		return nil
 	}
 
@@ -92,7 +128,11 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 	var searchResults []FeedSearchAPIResponseItem
 	err = json.Unmarshal(body, &searchResults)
 	if err != nil {
-		log.Println("Error unmarshalling response from external API: ", err)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+			"apiURL":   apiURL,
+			"error":    err,
+		}).Error("[searchRSS] Error unmarshalling response from external API")
 		return nil
 	}
 
@@ -101,44 +141,67 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 
 	// Cache the search results
 	if err := cache.Set(feedsearch_prefix, queryURLCacheKey, responseItems, 24*time.Hour); err != nil {
-		log.Printf("Failed to cache search results for URL %s: %v", queryURL, err)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+			"error":    err,
+		}).Error("[searchRSS] Failed to cache search results")
 	} else {
-		log.Printf("Successfully cached search results for URL %s", queryURL)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+		}).Info("[searchRSS] Successfully cached search results")
 	}
 
 	return responseItems
 }
-func calculateAuth(key, secret, datestr string) string {
 
+/**
+ * @function calculateAuth
+ * @description Calculates the authorization header for the Podcast Index API.
+ * @param {string} key The API key.
+ * @param {string} secret The API secret.
+ * @param {string} datestr The current date string in Unix timestamp format.
+ * @returns {string} The calculated authorization header.
+ * @dependencies sha1.New, hex.EncodeToString
+ */
+func calculateAuth(key, secret, datestr string) string {
 	h := sha1.New()
 	h.Write([]byte(key + secret + datestr))
-
-	log.Println("Hash Calculated as: ", h)
 	return hex.EncodeToString(h.Sum(nil))
 }
-func searchPodcast(r *http.Request, query string) []PodcastSearchResponseItem {
-	log.Println("Search request received for Podcast with query: ", query)
+
+/**
+ * @function searchPodcast
+ * @description Searches for podcasts matching a given query using the Podcast Index API.
+ * @param {*http.Request} _ The HTTP request (not used in this function).
+ * @param {string} query The search query.
+ * @returns {[]PodcastSearchResponseItem} An array of PodcastSearchResponseItem representing the search results.
+ * @dependencies calculateAuth, httpClient, log
+ */
+func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
+	log.WithFields(logrus.Fields{
+		"query": query,
+	}).Info("[searchPodcast] Search request received")
 	key := os.Getenv("PODCAST_INDEX_API_KEY")
 	secret := os.Getenv("PODCAST_INDEX_API_SECRET")
 	baseURL := "https://api.podcastindex.org/api/1.0/"
 	apiURL := baseURL + "search/byterm?q=" + url.QueryEscape(query)
 
-	log.Println("API URL: ", apiURL)
-	log.Println("API Key: ", key)
-	log.Println("API Secret: ", secret)
-	log.Println("Request Headers: ", apiURL)
+	log.WithFields(logrus.Fields{
+		"apiURL": apiURL,
+	}).Debug("[searchPodcast] API URL")
 
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		log.Println("Error creating request: ", err)
+		log.WithFields(logrus.Fields{
+			"query":  query,
+			"apiURL": apiURL,
+			"error":  err,
+		}).Error("[searchPodcast] Error creating request")
 		return nil
 	}
 	now := strconv.FormatInt(time.Now().Unix(), 10)
 	authorization := calculateAuth(key, secret, now)
-	log.Println("Authorization: ", authorization)
-	log.Println("Date: ", now)
-	log.Println("User-Agent: MyPodcastApp")
 
 	req.Header.Set("User-Agent", "MyPodcastApp")
 	req.Header.Set("X-Auth-Key", key)
@@ -148,22 +211,34 @@ func searchPodcast(r *http.Request, query string) []PodcastSearchResponseItem {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Println("Error making request to Podcast Index API: ", err)
+		log.WithFields(logrus.Fields{
+			"query":  query,
+			"apiURL": apiURL,
+			"error":  err,
+		}).Error("[searchPodcast] Error making request to Podcast Index API")
 		return nil
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Println("Error reading response from Podcast Index API: ", err)
+		log.WithFields(logrus.Fields{
+			"query":  query,
+			"apiURL": apiURL,
+			"error":  err,
+		}).Error("[searchPodcast] Error reading response from Podcast Index API")
 		return nil
 	}
 
 	var searchResults PodcastSearchAPIResponse
 	err = json.Unmarshal(body, &searchResults)
 	if err != nil {
-		log.Println("API Response: ", resp.Body)
-		log.Println("Error unmarshalling response from Podcast Index API: ", err)
+		log.WithFields(logrus.Fields{
+			"query":       query,
+			"apiURL":      apiURL,
+			"error":       err,
+			"apiResponse": string(body),
+		}).Error("[searchPodcast] Error unmarshalling response from Podcast Index API")
 		return nil
 	}
 
@@ -171,13 +246,24 @@ func searchPodcast(r *http.Request, query string) []PodcastSearchResponseItem {
 	return responseItems
 }
 
-// searchHandler handles the /search endpoint
+/**
+ * @function searchHandler
+ * @description Handles HTTP requests to the /search endpoint.
+ *              It supports searching for both RSS feeds and podcasts based on the 'type' query parameter.
+ *              It calls the appropriate search function (searchRSS or searchPodcast) and returns the results as JSON.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies searchRSS, searchPodcast, log
+ */
 func searchHandler(w http.ResponseWriter, r *http.Request) {
 	// Get the 'url' query parameter
 	searchType := r.URL.Query().Get("type")
-	if searchType == "rss" {
+	switch searchType {
+	case "rss":
 		queryURL := r.URL.Query().Get("q")
 		if queryURL == "" {
+			log.Warn("[searchHandler] No url provided for RSS search")
 			http.Error(w, "No url provided", http.StatusBadRequest)
 			response := map[string]string{
 				"status": "error",
@@ -186,17 +272,15 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 			return
-		} else {
-			var searchResults []FeedSearchResponseItem = searchRSS(queryURL)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(searchResults)
-			return
-
 		}
+		var searchResults []FeedSearchResponseItem = searchRSS(queryURL)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(searchResults)
 
-	} else if searchType == "podcast" {
+	case "podcast":
 		query := r.URL.Query().Get("q")
 		if query == "" {
+			log.Warn("[searchHandler] No query provided for podcast search")
 			http.Error(w, "No query provided", http.StatusBadRequest)
 			response := map[string]string{
 				"status": "error",
@@ -205,14 +289,15 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 			return
-		} else {
-			var searchResults []PodcastSearchResponseItem = searchPodcast(r, query)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(searchResults)
-			return
 		}
+		var searchResults []PodcastSearchResponseItem = searchPodcast(r, query)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(searchResults)
 
-	} else {
+	default:
+		log.WithFields(logrus.Fields{
+			"type": searchType,
+		}).Warn("[searchHandler] No or invalid type provided")
 		http.Error(w, "No or invalid type provided", http.StatusBadRequest)
 		response := map[string]string{
 			"status": "error",
@@ -220,7 +305,5 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
-		return
 	}
-
 }
