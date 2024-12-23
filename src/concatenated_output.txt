@@ -1,1359 +1,144 @@
-//getreaderview.go
+//share.go
 // Package main provides the main functionality for the web server.
 package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"math/rand"
 
-	readability "github.com/go-shiori/go-readability"
+	"github.com/sirupsen/logrus"
 )
 
 /**
- * @function getReaderViewResult
- * @description Retrieves the reader view of a given URL using the go-readability library.
- *              It returns a ReaderViewResult containing the parsed content or an error.
- * @param {string} url The URL to retrieve the reader view for.
- * @returns {ReaderViewResult} A struct containing the reader view result or an error.
- * @dependencies getReaderView, log
- */
-func getReaderViewResult(url string) ReaderViewResult {
-	readerView, err := getReaderView(url)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   url,
-			"error": err,
-		}).Error("[ReaderView] Error retrieving content")
-		return ReaderViewResult{
-			URL:    url,
-			Status: "error",
-			Error:  err,
-		}
-	}
-	return ReaderViewResult{
-		URL:         url,
-		Status:      "ok",
-		ReaderView:  readerView.Content,
-		Title:       readerView.Title,
-		SiteName:    readerView.SiteName,
-		Image:       readerView.Image,
-		Favicon:     readerView.Favicon,
-		TextContent: readerView.TextContent,
-	}
-}
-
-/**
- * @function getReaderViewHandler
- * @description Handles HTTP requests to the /getreaderview endpoint.
+ * @function createShareHandler
+ * @description Handles HTTP requests to the /create endpoint.
  *              It expects a POST request with a JSON body containing an array of URLs.
- *              It retrieves the reader view for each URL, caches the results, and returns a JSON response.
+ *              It generates a random 6-character key, stores the URLs in the cache with that key,
+ *              and returns a link to the /share endpoint with the generated key.
  * @param {http.ResponseWriter} w The HTTP response writer.
  * @param {*http.Request} r The HTTP request.
  * @returns {void}
- * @dependencies getReaderViewResult, cache, createHash, log
+ * @dependencies cache, log, rand.Seed, rand.Intn
  */
-func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
+func createShareHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		log.WithFields(logrus.Fields{
 			"method": r.Method,
-		}).Warn("[ReaderView] Invalid method")
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		}).Warn("[createShareHandler] Invalid method")
+		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
 		return
 	}
-
-	var urls Urls
-	if err := json.NewDecoder(r.Body).Decode(&urls); err != nil {
+	var req createShareRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
 		log.WithFields(logrus.Fields{
 			"error": err,
-		}).Error("[ReaderView] Error decoding request body")
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		}).Error("[createShareHandler] Error decoding request body")
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	var wg sync.WaitGroup
-	results := make([]ReaderViewResult, len(urls.Urls))
-
-	for i, url := range urls.Urls {
-		wg.Add(1)
-		go func(i int, url string) {
-			defer wg.Done()
-
-			cacheKey := createHash(url)
-			var result ReaderViewResult
-
-			if err := cache.Get(readerView_prefix, cacheKey, &result); err != nil {
-				log.WithFields(logrus.Fields{
-					"url": url,
-				}).Info("[ReaderView] Cache miss")
-				result = getReaderViewResult(url)
-				if len(result.TextContent) < 100 {
-					result.TextContent = `<div id="readability-page-1" class="page"><p id="cmsg">Error getting reader view or site requires subscription. Please open the link in a new tab.</p></div>`
-					result.ReaderView = result.TextContent
-				}
-				if err := cache.Set(readerView_prefix, cacheKey, result, 24*time.Hour); err != nil {
-					log.WithFields(logrus.Fields{
-						"url":   url,
-						"error": err,
-					}).Error("[ReaderView] Failed to cache reader view")
-				}
-			} else {
-				log.WithFields(logrus.Fields{
-					"url": url,
-				}).Info("[ReaderView] Cache hit")
-			}
-			results[i] = result
-		}(i, url)
+	if len(req.Urls) == 0 {
+		log.Warn("[createShareHandler] No URLs provided")
+		http.Error(w, "No URLs provided", http.StatusBadRequest)
+		response := map[string]string{
+			"status": "error",
+			"error":  "No URLs provided",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
 	}
-	wg.Wait()
 
+	log.WithFields(logrus.Fields{
+		"urls": req.Urls,
+	}).Info("[createShareHandler] Create request received")
+
+	// Generate a random key of maximum 6 characters
+	rand.Seed(time.Now().UnixNano())
+	chars := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	randomKey := make([]rune, 6)
+	for i := range randomKey {
+		randomKey[i] = chars[rand.Intn(len(chars))]
+	}
+
+	cacheKey := "share:" + string(randomKey)
+
+	// Save the URLs to the cache
+	err = cache.Set(cacheKey, "urls", req.Urls, 0) // setting exp 0 to keep it forever
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key":   cacheKey,
+			"urls":  req.Urls,
+			"error": err,
+		}).Error("[createShareHandler] Failed to save shared URLs")
+		http.Error(w, "Failed to save shared URLs", http.StatusInternalServerError)
+		return
+	}
+
+	// Respond with the link
+	response := map[string]string{"status": "ok", "link": "https://www.digests.app/share/" + string(randomKey)}
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(results); err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[ReaderView] Failed to encode JSON")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-	}
+	json.NewEncoder(w).Encode(response)
 }
 
 /**
- * @function getReaderView
- * @description Retrieves the reader view of a given URL using the go-readability library.
- *              It sets a timeout for the request and returns the parsed article or an error.
- * @param {string} url The URL to retrieve the reader view for.
- * @returns {readability.Article, error} The parsed article or an error.
- * @dependencies readability.FromURL, log
- */
-func getReaderView(url string) (readability.Article, error) {
-	article, err := readability.FromURL(url, 30*time.Second)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   url,
-			"error": err,
-		}).Error("[ReaderView] Failed to parse URL")
-		return readability.Article{}, fmt.Errorf("failed to parse URL: %w", err)
-	}
-	return article, nil
-}
-
-//server.go
-package main
-
-import (
-	"compress/gzip"
-	"flag"
-	"net/http"
-	_ "net/http/pprof"
-	"runtime"
-	"strings"
-	"sync"
-	"time"
-
-	digestsCache "digests-app-api/cache"
-
-	"github.com/rs/cors"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/time/rate"
-)
-
-var (
-	limiter       = rate.NewLimiter(5, 15) // e.g., 5 requests/sec, burst 15
-	cache         digestsCache.Cache
-	log           = logrus.New()
-	urlList       []string
-	urlListMutex  = &sync.Mutex{}
-	refresh_timer = 60
-	redis_address = "localhost:6379"
-	numWorkers    = runtime.NumCPU()
-	cacheMutex    = &sync.Mutex{}
-	httpClient    = &http.Client{Timeout: 20 * time.Second}
-	cachePeriod   = 30
-)
-
-func main() {
-	// Start pprof profiling in a goroutine
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
-
-	port := flag.String("port", "8000", "port to run the application on")
-	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
-	redis := flag.String("redis", "localhost:6379", "redis address")
-	flag.Parse()
-
-	mux := http.NewServeMux()
-	log.Infof("Number of workers: %v", numWorkers)
-
-	// Setup routes
-	InitializeRoutes(mux)
-
-	// Wrap mux with middlewares
-	var handler http.Handler = mux
-
-	// 1) Recover from panics
-	handler = errorRecoveryMiddleware(handler)
-
-	// 2) CORS
-	handler = cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodOptions, http.MethodPut, http.MethodDelete},
-		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization"},
-		AllowCredentials: true,
-	}).Handler(handler)
-
-	// 3) Rate limit
-	handler = RateLimitMiddleware(handler)
-
-	// 4) GZIP compression
-	handler = GzipMiddleware(handler)
-
-	// Cache setup
-	redis_address = *redis
-	log.Info("Opening cache connection...")
-
-	redisCache, redisErr := digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
-	if redisErr != nil {
-		log.Warnf("Failed to open Redis cache (%v); falling back to in-memory cache", redisErr)
-		cache = digestsCache.NewGoCache(5*time.Minute, 10*time.Minute)
-	} else {
-		cache = redisCache
-	}
-
-	cachesize, cacheerr := cache.Count()
-	if cacheerr != nil {
-		log.Errorf("Failed to get cache size: %v", cacheerr)
-	} else {
-		log.Infof("Cache has %d items", cachesize)
-	}
-
-	// Set refresh timer from command-line
-	refresh_timer = *timer
-	refreshFeeds()
-
-	// Periodic refresh
-	go func() {
-		ticker := time.NewTicker(time.Duration(refresh_timer*4) * time.Minute)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			log.Info("Refreshing cache (periodic)...")
-			refreshFeeds()
-			log.Infof("Cache refreshed at %v, urlList=%v", time.Now().Format(time.RFC3339), urlList)
-		}
-	}()
-
-	log.Infof("Server is starting on port %v", *port)
-	log.Infof("Refresh timer is %v minutes", refresh_timer)
-	log.Infof("Redis address is %v", redis_address)
-
-	err := http.ListenAndServe(":"+*port, handler)
-	if err != nil {
-		log.Fatalf("Server failed to start: %v", err)
-	}
-}
-
-// errorRecoveryMiddleware ensures the server recovers from unexpected panics
-func errorRecoveryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.Errorf("Panic recovered: %v", rec)
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
-
-// GzipMiddleware adds gzip compression
-func GzipMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		wrw := gzipResponseWriter{ResponseWriter: w}
-		wrw.Header().Set("Content-Encoding", "gzip")
-		defer wrw.Flush()
-
-		next.ServeHTTP(&wrw, r)
-	})
-}
-
-type gzipResponseWriter struct {
-	http.ResponseWriter
-	wroteHeader bool
-	writer      *gzip.Writer
-}
-
-func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	if !w.wroteHeader {
-		w.Header().Del("Content-Length")
-		w.writer = gzip.NewWriter(w.ResponseWriter)
-		w.wroteHeader = true
-	}
-	return w.writer.Write(b)
-}
-
-func (w *gzipResponseWriter) WriteHeader(status int) {
-	w.ResponseWriter.WriteHeader(status)
-	if w.wroteHeader && w.writer != nil {
-		w.writer.Close()
-	}
-}
-
-func (w *gzipResponseWriter) Flush() {
-	if w.wroteHeader {
-		_ = w.writer.Flush()
-	}
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-// RateLimitMiddleware applies a rate limiter
-func RateLimitMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !limiter.Allow() {
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-//sqliteCache.go
-// Package digestsCache provides caching implementations.
-package digestsCache
-
-import (
-	"database/sql"
-	"encoding/json"
-	"errors"
-	"time"
-
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
-	"github.com/sirupsen/logrus"
-)
-
-// SQLiteCache implements the Cache interface using a local SQLite database.
-type SQLiteCache struct {
-	db *sql.DB
-}
-
-var ErrSQLCacheMiss = errors.New("sqlite cache: key not found or expired")
-
-// NewSQLiteCache creates a new SQLiteCache instance and initializes the database schema.
-func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		logrus.WithField("dbPath", dbPath).Error("Failed to open SQLite database")
-		return nil, err
-	}
-
-	// Enable WAL mode for better performance
-	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
-		logrus.WithError(err).Error("Failed to enable WAL mode")
-	}
-
-	// Create the cache table if it doesn't exist
-	schema := `
-	CREATE TABLE IF NOT EXISTS cache (
-		id TEXT PRIMARY KEY,
-		data TEXT NOT NULL,
-		expiration INTEGER NOT NULL
-	);
-	CREATE INDEX IF NOT EXISTS idx_expiration ON cache (expiration);
-	`
-	if _, err := db.Exec(schema); err != nil {
-		logrus.WithField("error", err).Error("Failed to create cache table in SQLite")
-		return nil, err
-	}
-
-	return &SQLiteCache{db: db}, nil
-}
-
-// Set inserts or updates a key in the SQLite database with an expiration time.
-// prefix:key is used as the primary key.
-func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
-	fullKey := prefix + ":" + key
-
-	valBytes, err := json.Marshal(value)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to marshal value for key (SQLite)")
-		return err
-	}
-
-	expirationUnix := time.Now().Add(expiration).Unix()
-	if expiration == 0 {
-		// If expiration is 0, set a large expiration in the distant future
-		expirationUnix = time.Now().AddDate(10, 0, 0).Unix()
-	}
-
-	// Use a transaction for better performance
-	tx, err := c.db.Begin()
-	if err != nil {
-		logrus.WithError(err).Error("Failed to begin transaction")
-		return err
-	}
-	defer tx.Rollback() // Rollback is safe to call even if the transaction was committed
-
-	stmt := `
-	INSERT INTO cache(id, data, expiration)
-	VALUES(?, ?, ?)
-	ON CONFLICT(id) DO UPDATE SET
-		data=excluded.data,
-		expiration=excluded.expiration;
-	`
-
-	_, err = tx.Exec(stmt, fullKey, valBytes, expirationUnix)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"key":   fullKey,
-			"error": err,
-		}).Error("Failed to set key in SQLite cache")
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		logrus.WithError(err).Error("Failed to commit transaction")
-		return err
-	}
-
-	return nil
-}
-
-// Get retrieves a key from the SQLite database and unmarshals it into dest.
-// If the key is expired or missing, it returns an error.
-func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
-	fullKey := prefix + ":" + key
-
-	stmt := `
-	SELECT data, expiration FROM cache
-	WHERE id = ? AND expiration > ?
-	LIMIT 1;
-	`
-
-	row := c.db.QueryRow(stmt, fullKey, time.Now().Unix())
-
-	var (
-		data       []byte
-		expiration int64
-	)
-	err := row.Scan(&data, &expiration)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			logrus.WithFields(logrus.Fields{
-				"key": fullKey,
-			}).Debug("Key not found in SQLite cache")
-			return ErrCacheMiss
-		}
-		logrus.WithFields(logrus.Fields{
-			"key":   fullKey,
-			"error": err,
-		}).Error("Failed to read key from SQLite cache")
-		return err
-	}
-
-	// Unmarshal data into dest
-	if err := json.Unmarshal(data, dest); err != nil {
-		logrus.WithFields(logrus.Fields{
-			"key": fullKey,
-		}).Error("Failed to unmarshal value from SQLite cache")
-		return err
-	}
-
-	return nil
-}
-
-// GetSubscribedListsFromCache scans the cache table for records that start with prefix:
-// and attempts to unmarshal them into a FeedItem to extract the FeedUrl.
-func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
-	var urls []string
-
-	stmt := `
-	SELECT id, data FROM cache
-	WHERE id LIKE ? AND expiration > ?;
-	`
-	rows, err := c.db.Query(stmt, prefix+":%", time.Now().Unix())
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("Failed to query SQLite cache for subscribed lists")
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			fullKey string
-			data    []byte
-		)
-		if err := rows.Scan(&fullKey, &data); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"error": err,
-			}).Error("Failed to scan SQLite cache row")
-			continue
-		}
-
-		var feedItem FeedItem
-		if err := json.Unmarshal(data, &feedItem); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"key":   fullKey,
-				"error": err,
-			}).Error("Failed to unmarshal value from SQLite cache")
-			continue
-		}
-
-		if feedItem.FeedUrl != "" {
-			urls = append(urls, feedItem.FeedUrl)
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		logrus.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("Error iterating SQLite cache rows")
-		return nil, err
-	}
-
-	return urls, nil
-}
-
-// SetFeedItems fetches existing feed items from the cache, deduplicates them with newItems,
-// then updates the cache with the merged slice.
-func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
-	var existingItems []FeedItem
-	err := c.Get(prefix, key, &existingItems)
-	if err != nil && !errors.Is(err, ErrCacheMiss) && !errors.Is(err, ErrSQLCacheMiss) {
-		return err
-	}
-
-	// Deduplicate
-	itemMap := make(map[string]FeedItem)
-	for _, item := range existingItems {
-		itemMap[item.GUID] = item
-	}
-	for _, newItem := range newItems {
-		itemMap[newItem.GUID] = newItem
-	}
-
-	uniqueItems := make([]FeedItem, 0, len(itemMap))
-	for _, item := range itemMap {
-		uniqueItems = append(uniqueItems, item)
-	}
-
-	return c.Set(prefix, key, uniqueItems, expiration)
-}
-
-// Count returns the total number of items in the cache (including expired items).
-func (c *SQLiteCache) Count() (int64, error) {
-	stmt := `SELECT COUNT(*) FROM cache;`
-	var count int64
-	err := c.db.QueryRow(stmt).Scan(&count)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("Failed to count items in SQLite cache")
-		return 0, err
-	}
-	return count, nil
-}
-
-//redisCache.go
-// Package digestsCache provides caching implementations.
-package digestsCache
-
-import (
-	"context"
-	"encoding/json"
-	"strings"
-	"time"
-
-	"github.com/nitishm/go-rejson/v4"
-	"github.com/redis/go-redis/v9"
-	"github.com/sirupsen/logrus"
-)
-
-var ctx = context.Background()
-var log = logrus.New()
-
-type RedisCache struct {
-	client  *redis.Client
-	handler *rejson.Handler
-}
-
-type FeedItem struct {
-	GUID    string `json:"guid"`
-	FeedUrl string `json:"feedUrl"`
-	// Include other fields as necessary.
-}
-
-func NewRedisCache(addr string, password string, db int) (*RedisCache, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Password: password,
-		DB:       db,
-	})
-
-	_, err := client.Ping(context.Background()).Result()
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"address":  addr,
-			"database": db,
-		}).Error("Failed to connect to Redis")
-		return nil, err
-	}
-
-	handler := rejson.NewReJSONHandler()
-	handler.SetGoRedisClient(client)
-
-	return &RedisCache{client: client, handler: handler}, nil
-}
-
-func (cache *RedisCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
-	_, err := cache.handler.JSONSet(prefix+":"+key, ".", value)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to set key in Redis")
-		return err
-	}
-
-	if expiration != 0 {
-		err = cache.client.Expire(ctx, prefix+":"+key, expiration).Err()
-		if err != nil {
-			log.WithFields(logrus.Fields{
-				"key": key,
-			}).Error("Failed to set expiration for key in Redis")
-		}
-	}
-
-	return err
-}
-
-func (cache *RedisCache) Get(prefix string, key string, dest interface{}) error {
-	val, err := cache.handler.JSONGet(prefix+":"+key, ".")
-	if err != nil {
-		if err == redis.Nil {
-			log.WithFields(logrus.Fields{
-				"key": key,
-			}).Info("Key not found in Redis")
-			return ErrCacheMiss // Use the common ErrCacheMiss
-		}
-		log.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to get key from Redis")
-		return err
-	}
-
-	// Convert val to []byte, then to string
-	valStr := string(val.([]byte))
-
-	err = json.Unmarshal([]byte(valStr), dest)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to unmarshal value for key from Redis")
-	}
-
-	return err
-}
-
-func (cache *RedisCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
-	ctx := context.Background()                               // Create a new context
-	keys, err := cache.client.Keys(ctx, prefix+":*").Result() // Pass the context to the Keys method
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("Failed to get keys from Redis")
-		return nil, err
-	}
-
-	var urls []string
-	for _, key := range keys {
-		var feedItem FeedItem
-		actualKey := strings.TrimPrefix(key, prefix+":") // Remove the prefix from the key
-		err := cache.Get(prefix, actualKey, &feedItem)
-		if err != nil {
-			log.WithFields(logrus.Fields{
-				"key":   actualKey,
-				"error": err,
-			}).Error("Failed to get value from Redis")
-			continue
-		}
-
-		if feedItem.FeedUrl != "" {
-			urls = append(urls, feedItem.FeedUrl)
-		}
-	}
-
-	return urls, nil
-}
-
-func (cache *RedisCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
-	// Fetch existing items from cache
-	var existingItems []FeedItem
-	err := cache.Get(prefix, key, &existingItems)
-	if err != nil && err != redis.Nil {
-		return err
-	}
-
-	// Deduplication based on GUID
-	itemMap := make(map[string]FeedItem)
-	for _, item := range existingItems {
-		itemMap[item.GUID] = item
-	}
-	for _, newItem := range newItems {
-		itemMap[newItem.GUID] = newItem // This will replace existing items with the same GUID or add new ones
-	}
-
-	// Convert map back to slice
-	uniqueItems := make([]FeedItem, 0, len(itemMap))
-	for _, item := range itemMap {
-		uniqueItems = append(uniqueItems, item)
-	}
-
-	// Cache the deduplicated slice of items
-	return cache.Set(prefix, key, uniqueItems, expiration)
-}
-
-func (cache *RedisCache) Count() (int64, error) {
-	return cache.client.DBSize(ctx).Result()
-}
-
-//goCache.go
-// Package digestsCache provides caching implementations.
-package digestsCache
-
-import (
-	"encoding/json"
-	"errors"
-	"strings"
-	"time"
-
-	"github.com/patrickmn/go-cache"
-	"github.com/sirupsen/logrus"
-)
-
-type GoCache struct {
-	cache *cache.Cache
-}
-
-var ErrCacheMiss = errors.New("cache: key not found")
-
-func NewGoCache(defaultExpiration, cleanupInterval time.Duration) *GoCache {
-	c := cache.New(defaultExpiration, cleanupInterval)
-	return &GoCache{cache: c}
-}
-
-func (c *GoCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
-	fullKey := prefix + ":" + key
-	valBytes, err := json.Marshal(value)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to marshal value for key")
-		return err
-	}
-	c.cache.Set(fullKey, valBytes, expiration)
-	return nil
-}
-
-func (c *GoCache) Get(prefix string, key string, dest interface{}) error {
-	fullKey := prefix + ":" + key
-	val, found := c.cache.Get(fullKey)
-	if !found {
-		log.WithFields(logrus.Fields{
-			"key": key,
-		}).Info("Key not found in cache")
-		return ErrCacheMiss
-	}
-
-	valBytes, ok := val.([]byte)
-	if !ok {
-		log.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to assert type of cached value")
-		return ErrCacheMiss // Or define a more appropriate error
-	}
-
-	err := json.Unmarshal(valBytes, dest)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to unmarshal cached value")
-		return err
-	}
-
-	return nil
-}
-
-func (c *GoCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
-	var urls []string
-	for k, v := range c.cache.Items() {
-		if strings.HasPrefix(k, prefix+":") {
-			var feedItem FeedItem
-			err := json.Unmarshal(v.Object.([]byte), &feedItem)
-			if err != nil {
-				log.WithFields(logrus.Fields{
-					"key":   k,
-					"error": err,
-				}).Error("Failed to unmarshal value from cache")
-				continue
-			}
-
-			if feedItem.FeedUrl != "" {
-				urls = append(urls, feedItem.FeedUrl)
-			}
-		}
-	}
-	return urls, nil
-}
-
-func (c *GoCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
-	var existingItems []FeedItem
-	err := c.Get(prefix, key, &existingItems)
-	if err != nil && err != ErrCacheMiss {
-		return err
-	}
-
-	itemMap := make(map[string]FeedItem)
-	for _, item := range existingItems {
-		itemMap[item.GUID] = item
-	}
-	for _, newItem := range newItems {
-		itemMap[newItem.GUID] = newItem
-	}
-
-	uniqueItems := make([]FeedItem, 0, len(itemMap))
-	for _, item := range itemMap {
-		uniqueItems = append(uniqueItems, item)
-	}
-
-	return c.Set(prefix, key, uniqueItems, expiration)
-}
-
-func (c *GoCache) Count() (int64, error) {
-	return int64(c.cache.ItemCount()), nil
-}
-
-//cacheInterface.go
-// Package digestsCache provides caching implementations.
-package digestsCache
-
-import "time"
-
-// Cache is the interface that defines the methods for a cache implementation.
-type Cache interface {
-	Set(prefix string, key string, value interface{}, expiration time.Duration) error
-	Get(prefix string, key string, dest interface{}) error
-	GetSubscribedListsFromCache(prefix string) ([]string, error)
-	SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error
-	Count() (int64, error)
-}
-
-//dataModel.go
-// Package models defines the data structures used in the application.
-package main
-
-import (
-	"github.com/mmcdole/gofeed"
-)
-
-// ParseRequest represents the expected incoming JSON payload structure.
-// ParseRequest represents the expected JSON body for the /parse endpoint.
-type ParseRequest struct {
-	URLs         []string `json:"urls"`
-	Page         int      `json:"page"`
-	ItemsPerPage int      `json:"itemsperpage"`
-}
-
-type RGBColor struct {
-	R uint8 `json:"r"`
-	G uint8 `json:"g"`
-	B uint8 `json:"b"`
-}
-
-// Add these structs to your existing code
-type MediaContent struct {
-	URL    string `xml:"url,attr"`
-	Width  int    `xml:"width,attr"`
-	Height int    `xml:"height,attr"`
-}
-
-type ExtendedItem struct {
-	*gofeed.Item
-	MediaContent []MediaContent `xml:"http://search.yahoo.com/mrss/ content"`
-}
-
-// FeedResponseItem represents an enriched structure for an individual feed item.
-type FeedResponseItem struct {
-	Type                   string                      `json:"type"`
-	ID                     string                      `json:"id"`
-	Title                  string                      `json:"title"`
-	Description            string                      `json:"description"`
-	Link                   string                      `json:"link"`
-	Author                 string                      `json:"author"`
-	Published              string                      `json:"published"`
-	Content                string                      `json:"content"`
-	Created                string                      `json:"created"`
-	Content_Encoded        string                      `json:"content_encoded"`
-	Categories             string                      `json:"categories"`
-	Enclosures             []*gofeed.Enclosure         `json:"enclosures"`
-	Thumbnail              string                      `json:"thumbnail"`
-	ThumbnailColor         RGBColor                    `json:"thumbnailColor"`
-	ThumbnailColorComputed string                      `json:"thumbnailColorComputed"`
-	EpisodeType            string                      `json:"episodeType,omitempty"`
-	Subtitle               []PodcastTranscriptsDetails `json:"subtitle,omitempty"`
-	Duration               int                         `json:"duration,omitempty"`
-}
-
-// FeedResponse represents the structure for the overall feed, including metadata and items.
-type FeedResponse struct {
-	Type          string              `json:"type"`
-	GUID          string              `json:"guid"`
-	Status        string              `json:"status"`
-	Error         error               `json:"error,omitempty"`
-	SiteTitle     string              `json:"siteTitle"`
-	FeedTitle     string              `json:"feedTitle"`
-	FeedUrl       string              `json:"feedUrl"`
-	Description   string              `json:"description"`
-	Link          string              `json:"link"`
-	LastUpdated   string              `json:"lastUpdated"`
-	LastRefreshed string              `json:"lastRefreshed"`
-	Published     string              `json:"published"`
-	Author        *gofeed.Person      `json:"author"`
-	Language      string              `json:"language"`
-	Favicon       string              `json:"favicon"`
-	SiteImage     string              `json:"siteImage,omitempty"`
-	Categories    string              `json:"categories"`
-	Items         *[]FeedResponseItem `json:"items,omitempty"`
-}
-
-type Feeds struct {
-	Feeds []FeedResponse `json:"feeds"`
-}
-
-type ReaderViewResult struct {
-	URL         string `json:"url"`
-	Status      string `json:"status"`
-	ReaderView  string `json:"content"`
-	Error       error  `json:"error,omitempty"`
-	Title       string `json:"title"`
-	SiteName    string `json:"siteName"`
-	Image       string `json:"image"`
-	Favicon     string `json:"favicon"`
-	TextContent string `json:"textContent"`
-}
-
-type FeedSearchAPIResponseItem struct {
-	Bozo           int      `json:"bozo"`
-	Content_length int      `json:"content_length"`
-	Content_type   string   `json:"content_type"`
-	Description    string   `json:"description"`
-	Favicon        string   `json:"favicon"`
-	Hubs           []string `json:"hubs"`
-	Is_Podcast     bool     `json:"is_podcast"`
-	Is_Push        bool     `json:"is_push"`
-	Item_Count     int      `json:"item_count"`
-	Last_Seen      string   `json:"last_seen"`
-	Last_Updated   string   `json:"last_updated"`
-	Score          float64  `json:"score"`
-	Site_name      string   `json:"site_name"`
-	Site_url       string   `json:"site_url"`
-	Title          string   `json:"title"`
-	Url            string   `json:"url"`
-	Velocity       float64  `json:"velocity"`
-	Version        string   `json:"version"`
-	Self_Url       string   `json:"self_url"`
-}
-
-type FeedSearchResponseItem struct {
-	Title        string  `json:"title"`
-	Url          string  `json:"url"`
-	Site_name    string  `json:"site_name"`
-	Site_url     string  `json:"site_url"`
-	Description  string  `json:"description"`
-	Favicon      string  `json:"favicon"`
-	Is_Podcast   bool    `json:"is_podcast"`
-	Is_Push      bool    `json:"is_push"`
-	Item_Count   int     `json:"item_count"`
-	Last_Seen    string  `json:"last_seen"`
-	Last_Updated string  `json:"last_updated"`
-	Score        float64 `json:"score"`
-}
-
-type PodcastSearchResponseItem struct {
-	Title             string   `json:"title"`
-	Url               string   `json:"url"`
-	Author            string   `json:"author"`
-	Description       string   `json:"description"`
-	FeedImage         string   `json:"feedImage"`
-	Image             string   `json:"image"`
-	Artwork           string   `json:"artwork"`
-	Categories        []string `json:"categories"`
-	PodcastGUID       string   `json:"podcastGuid"`
-	EpisodeCount      int      `json:"episodeCount"`
-	NewestItemPubdate float32  `json:"newestItemPubdate"`
-}
-
-type PodcastAPIResponseItem struct {
-	Id                     int                         `json:"id"`
-	Title                  string                      `json:"title"`
-	Url                    string                      `json:"url"`
-	OriginalUrl            string                      `json:"originalUrl"`
-	Link                   string                      `json:"link"`
-	Description            string                      `json:"description"`
-	Author                 string                      `json:"author"`
-	Language               string                      `json:"language"`
-	OwnerName              string                      `json:"ownerName"`
-	Image                  string                      `json:"image"`
-	Artwork                string                      `json:"artwork"`
-	FeedImage              string                      `json:"feedImage"`
-	FeedID                 string                      `json:"feedId"`
-	PodcastGUID            string                      `json:"podcastGuid"`
-	LastUpdatedTime        string                      `json:"lastUpdatedTime"`
-	LastCrawlTime          int                         `json:"lastCrawlTime"`
-	LastParseTime          int                         `json:"lastParseTime"`
-	InPollingQueue         int                         `json:"inPollingQueue"`
-	Priority               int                         `json:"priority"`
-	LastGoodHttpStatusTime int                         `json:"lastGoodHttpStatusTime"`
-	LastHttpStatus         int                         `json:"lastHttpStatus"`
-	ContentType            string                      `json:"contentType"`
-	ItunedId               int                         `json:"itunedId"`
-	Generator              string                      `json:"generator"`
-	Dead                   int                         `json:"dead"`
-	CrawlErrors            int                         `json:"crawlErrors"`
-	ParseErrors            int                         `json:"parseErrors"`
-	Categories             []string                    `json:"podCast_Categories"`
-	Locked                 int                         `json:"locked"`
-	Medium                 string                      `json:"medium"`
-	EpisodeCount           int                         `json:"episodeCount"`
-	ImageUrlHash           float64                     `json:"imageUrlHash"`
-	NewestItemPubdate      float32                     `json:"newestItemPubdate"`
-	Transcripts            []PodcastTranscriptsDetails `json:"transcripts"`
-}
-
-type PodcastTranscriptsDetails struct {
-	Url  string                 `json:"url"`
-	Type PodcastTranscriptsType `json:"type"`
-}
-
-type PodcastTranscriptsType string
-
-// Define constants of the custom type
-const (
-	TextHTML       PodcastTranscriptsType = "text/html"
-	ApplicationSRT PodcastTranscriptsType = "application/srt"
-	ApplicationVTT PodcastTranscriptsType = "application/vtt"
-)
-
-type PodcastSearchAPIResponse struct {
-	Items       []PodcastAPIResponseItem `json:"feeds"`
-	Status      string                   `json:"status"`
-	Count       int                      `json:"count"`
-	Query       string                   `json:"query"`
-	Description string                   `json:"description"`
-}
-
-type TTSRequest struct {
-	Text         string `json:"text"`
-	LanguageCode string `json:"languageCode"`
-	SsmlGender   string `json:"ssmlGender"`
-	VoiceName    string `json:"voiceName"`
-	Url          string `json:"url"`
-}
-
-// MetaData Items
-type MetaDataResponseItem struct {
-	Title       string      `json:"title"`
-	Description string      `json:"description"`
-	Images      []WebMedia  `json:"images"`
-	Type        string      `json:"type"`
-	Sitename    string      `json:"sitename"`
-	Favicon     string      `json:"favicon"`
-	Duration    int         `json:"duration"`
-	Domain      string      `json:"domain"`
-	URL         string      `json:"url"`
-	Videos      []WebMedia  `json:"videos"`
-	Locale      string      `json:"locale,omitempty"`
-	Determiner  string      `json:"determiner,omitempty"`
-	Raw         interface{} `json:"raw,omitempty"`
-	ThemeColor  string      `json:"themeColor,omitempty"`
-}
-
-// WebMedia captures info about images/videos, including optional metadata.
-type WebMedia struct {
-	URL         string   `json:"url"`
-	Alt         string   `json:"alt,omitempty"`
-	Type        string   `json:"type,omitempty"`
-	Width       int      `json:"width,omitempty"`
-	Height      int      `json:"height,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	SecureURL   string   `json:"secure_url,omitempty"`
-	Duration    int      `json:"duration,omitempty"`
-	ReleaseDate string   `json:"release_date,omitempty"`
-}
-
-// Urls represents a list of URLs in a JSON payload.
-type Urls struct {
-	Urls []string `json:"urls"`
-}
-
-// FeedResult represents the result of discovering an RSS feed for a URL.
-type FeedResult struct {
-	URL      string `json:"url"`
-	Status   string `json:"status"`
-	Error    string `json:"error,omitempty"`
-	FeedLink string `json:"feedLink"`
-}
-
-// createShareRequest represents the expected JSON body for the /create endpoint.
-type createShareRequest struct {
-	Urls []string `json:"urls"`
-}
-
-// fetchShareRequest represents the expected JSON body for the /share endpoint.
-type fetchShareRequest struct {
-	Key string `json:"key"`
-}
-
-// URLValidationRequest represents the request format for URL validation
-type URLValidationRequest struct {
-	URLs []string `json:"urls"`
-}
-
-// URLStatus represents the status of a single URL validation
-type URLStatus struct {
-	URL    string `json:"url"`
-	Status string `json:"status"`
-}
-
-// CONSTANTS
-
-const redis_password = ""
-const redis_db = 0
-const feed_prefix = "feed:"
-const metaData_prefix = "metaData:"
-const readerView_prefix = "readerViewContent:"
-const feedsearch_prefix = "feedsearch:"
-const thumbnailColor_prefix = "thumbnailColor:"
-
-const audio_prefix = "tts:"
-
-const DefaultRed = uint8(128)
-const DefaultGreen = uint8(128)
-const DefaultBlue = uint8(128)
-
-//discover.go
-// Package main provides the main functionality for the web server.
-package main
-
-import (
-	"encoding/json"
-	"errors"
-	"net/http"
-	"net/url"
-	"strings"
-	"sync"
-
-	"github.com/PuerkitoBio/goquery"
-	"github.com/sirupsen/logrus"
-)
-
-var (
-	feedResultPool = &sync.Pool{
-		New: func() interface{} {
-			return &FeedResult{}
-		},
-	}
-)
-
-/**
- * @function discoverHandler
- * @description Handles HTTP requests to the /discover endpoint.
- *              It expects a POST request with a JSON body containing an array of URLs.
- *              It attempts to discover the RSS feed URL for each provided URL and returns the results as JSON.
+ * @function shareHandler
+ * @description Handles HTTP requests to the /share endpoint.
+ *              It expects a POST request with a JSON body containing a key.
+ *              It retrieves the URLs associated with that key from the cache and returns them as JSON.
  * @param {http.ResponseWriter} w The HTTP response writer.
  * @param {*http.Request} r The HTTP request.
  * @returns {void}
- * @dependencies discoverRssFeedUrl, generateGitHubRssUrl, generateRedditRssUrl, ensureAbsoluteUrl, httpClient, log
+ * @dependencies cache, log
  */
-func discoverHandler(w http.ResponseWriter, r *http.Request) {
+func shareHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		log.WithFields(logrus.Fields{
 			"method": r.Method,
-		}).Warn("[discoverHandler] Invalid method")
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}).Warn("[shareHandler] Invalid method")
+		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
 		return
 	}
-	var urls Urls
-	err := json.NewDecoder(r.Body).Decode(&urls)
+	log.Info("[shareHandler] Share request received")
+
+	// Decode the request body
+	var req fetchShareRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
 		log.WithFields(logrus.Fields{
 			"error": err,
-		}).Error("[discoverHandler] Error decoding request body")
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		}).Error("[shareHandler] Error decoding request body")
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	var wg sync.WaitGroup
-	results := make([]FeedResult, len(urls.Urls))
-	for i, url := range urls.Urls {
-		wg.Add(1)
-		go func(i int, url string) {
-			defer wg.Done()
-			feedLink, err := discoverRssFeedUrl(url)
-			result := feedResultPool.Get().(*FeedResult)
-			defer feedResultPool.Put(result)
-			if err != nil {
-				result.URL = url
-				result.Status = "error"
-				result.Error = err.Error()
-				result.FeedLink = ""
-			} else {
-				result.URL = url
-				result.Status = "ok"
-				result.FeedLink = feedLink
-			}
-			results[i] = *result
-		}(i, url)
-	}
-	wg.Wait()
+	// Get the key from the request body
+	cacheKey := "share:" + req.Key
 
+	// Get the URLs from the cache
+	var urls []string
+	err = cache.Get(cacheKey, "urls", &urls)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key":   cacheKey,
+			"error": err,
+		}).Error("[shareHandler] Error getting URLs from cache")
+		http.Error(w, "Invalid share link", http.StatusBadRequest)
+		return
+	}
+
+	// Respond with the URLs
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string][]FeedResult{"feeds": results})
-}
+	json.NewEncoder(w).Encode(urls)
 
-/**
- * @function discoverRssFeedUrl
- * @description Attempts to discover the RSS feed URL for a given URL.
- *              It first checks if the URL is a GitHub or Reddit URL and generates the feed URL accordingly.
- *              Otherwise, it sends an HTTP GET request to the URL, parses the HTML response,
- *              and searches for link elements with type="application/rss+xml".
- * @param {string} urlStr The URL to discover the RSS feed for.
- * @returns {string, error} The RSS feed URL if found, or an error if not found or an error occurred.
- * @dependencies generateGitHubRssUrl, generateRedditRssUrl, ensureAbsoluteUrl, httpClient, goquery.NewDocumentFromReader, log
- */
-func discoverRssFeedUrl(urlStr string) (string, error) {
-	if strings.HasPrefix(urlStr, "https://github.com") {
-		return generateGitHubRssUrl(urlStr), nil
-	}
-
-	if strings.HasPrefix(urlStr, "https://www.reddit.com") {
-		return generateRedditRssUrl(urlStr), nil
-	}
-
-	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   urlStr,
-			"error": err,
-		}).Error("[discoverRssFeedUrl] Error creating request")
-		return "", err
-	}
-
-	// Set a custom User-Agent to avoid being blocked by some websites
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   urlStr,
-			"error": err,
-		}).Error("[discoverRssFeedUrl] Error sending request")
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.WithFields(logrus.Fields{
-			"url":        urlStr,
-			"statusCode": resp.StatusCode,
-		}).Error("[discoverRssFeedUrl] Request failed")
-		return "", errors.New("request failed")
-	}
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   urlStr,
-			"error": err,
-		}).Error("[discoverRssFeedUrl] Error parsing HTML")
-		return "", err
-	}
-
-	rssLink, exists := doc.Find(`link[type="application/rss+xml"]`).Attr("href")
-	if !exists {
-		log.WithFields(logrus.Fields{
-			"url": urlStr,
-		}).Warn("[discoverRssFeedUrl] RSS feed not found in HTML")
-		return "", errors.New("RSS feed not found")
-	}
-
-	rssLink, err = ensureAbsoluteUrl(urlStr, rssLink)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":     urlStr,
-			"rssLink": rssLink,
-			"error":   err,
-		}).Error("[discoverRssFeedUrl] Error ensuring absolute URL")
-		return "", err
-	}
-
-	return rssLink, nil
-}
-
-/**
- * @function generateGitHubRssUrl
- * @description Generates a GitHub RSS feed URL from a GitHub repository URL.
- * @param {string} url The GitHub repository URL.
- * @returns {string} The corresponding GitHub RSS feed URL.
- */
-func generateGitHubRssUrl(url string) string {
-	return strings.TrimRight(url, "/") + "/commits/master.atom"
-}
-
-/**
- * @function generateRedditRssUrl
- * @description Generates a Reddit RSS feed URL from a Reddit URL.
- * @param {string} url The Reddit URL.
- * @returns {string} The corresponding Reddit RSS feed URL.
- */
-func generateRedditRssUrl(url string) string {
-	return strings.TrimRight(url, "/") + "/.rss"
-}
-
-/**
- * @function ensureAbsoluteUrl
- * @description Ensures that a given URL is absolute. If the URL is relative, it resolves it against the base URL.
- * @param {string} baseUrl The base URL to use for resolving relative URLs.
- * @param {string} relativeOrAbsoluteUrl The URL to ensure is absolute.
- * @returns {string, error} The absolute URL, or an error if the URL is invalid.
- * @dependencies url.Parse, url.Parse
- */
-func ensureAbsoluteUrl(baseUrl, relativeOrAbsoluteUrl string) (string, error) {
-	u, err := url.Parse(relativeOrAbsoluteUrl)
-	if err != nil || !u.IsAbs() {
-		u, err = url.Parse(baseUrl)
-		if err != nil {
-			return "", err
-		}
-		rel, err := url.Parse(relativeOrAbsoluteUrl)
-		if err != nil {
-			return "", err
-		}
-		return u.ResolveReference(rel).String(), nil
-	}
-	return relativeOrAbsoluteUrl, nil
+	log.WithFields(logrus.Fields{
+		"key":  req.Key,
+		"urls": urls,
+	}).Info("[shareHandler] Share request processed")
 }
 
 //search.go
@@ -1667,828 +452,349 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-//share.go
+//getreaderview.go
 // Package main provides the main functionality for the web server.
 package main
 
 import (
 	"encoding/json"
-	"net/http"
-	"time"
-
-	"math/rand"
-
-	"github.com/sirupsen/logrus"
-)
-
-/**
- * @function createShareHandler
- * @description Handles HTTP requests to the /create endpoint.
- *              It expects a POST request with a JSON body containing an array of URLs.
- *              It generates a random 6-character key, stores the URLs in the cache with that key,
- *              and returns a link to the /share endpoint with the generated key.
- * @param {http.ResponseWriter} w The HTTP response writer.
- * @param {*http.Request} r The HTTP request.
- * @returns {void}
- * @dependencies cache, log, rand.Seed, rand.Intn
- */
-func createShareHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[createShareHandler] Invalid method")
-		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
-		return
-	}
-	var req createShareRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[createShareHandler] Error decoding request body")
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if len(req.Urls) == 0 {
-		log.Warn("[createShareHandler] No URLs provided")
-		http.Error(w, "No URLs provided", http.StatusBadRequest)
-		response := map[string]string{
-			"status": "error",
-			"error":  "No URLs provided",
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-		return
-	}
-
-	log.WithFields(logrus.Fields{
-		"urls": req.Urls,
-	}).Info("[createShareHandler] Create request received")
-
-	// Generate a random key of maximum 6 characters
-	rand.Seed(time.Now().UnixNano())
-	chars := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-	randomKey := make([]rune, 6)
-	for i := range randomKey {
-		randomKey[i] = chars[rand.Intn(len(chars))]
-	}
-
-	cacheKey := "share:" + string(randomKey)
-
-	// Save the URLs to the cache
-	err = cache.Set(cacheKey, "urls", req.Urls, 0) // setting exp 0 to keep it forever
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key":   cacheKey,
-			"urls":  req.Urls,
-			"error": err,
-		}).Error("[createShareHandler] Failed to save shared URLs")
-		http.Error(w, "Failed to save shared URLs", http.StatusInternalServerError)
-		return
-	}
-
-	// Respond with the link
-	response := map[string]string{"status": "ok", "link": "https://www.digests.app/share/" + string(randomKey)}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}
-
-/**
- * @function shareHandler
- * @description Handles HTTP requests to the /share endpoint.
- *              It expects a POST request with a JSON body containing a key.
- *              It retrieves the URLs associated with that key from the cache and returns them as JSON.
- * @param {http.ResponseWriter} w The HTTP response writer.
- * @param {*http.Request} r The HTTP request.
- * @returns {void}
- * @dependencies cache, log
- */
-func shareHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[shareHandler] Invalid method")
-		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
-		return
-	}
-	log.Info("[shareHandler] Share request received")
-
-	// Decode the request body
-	var req fetchShareRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[shareHandler] Error decoding request body")
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	// Get the key from the request body
-	cacheKey := "share:" + req.Key
-
-	// Get the URLs from the cache
-	var urls []string
-	err = cache.Get(cacheKey, "urls", &urls)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key":   cacheKey,
-			"error": err,
-		}).Error("[shareHandler] Error getting URLs from cache")
-		http.Error(w, "Invalid share link", http.StatusBadRequest)
-		return
-	}
-
-	// Respond with the URLs
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(urls)
-
-	log.WithFields(logrus.Fields{
-		"key":  req.Key,
-		"urls": urls,
-	}).Info("[shareHandler] Share request processed")
-}
-
-//utils.go
-// Package main provides the main functionality for the web server.
-package main
-
-import (
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
+
+	readability "github.com/go-shiori/go-readability"
 )
 
-// validateURLsHandler handles the /validate endpoint
-func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
+/**
+ * @function getReaderViewResult
+ * @description Retrieves the reader view of a given URL using the go-readability library.
+ *              It returns a ReaderViewResult containing the parsed content or an error.
+ * @param {string} url The URL to retrieve the reader view for.
+ * @returns {ReaderViewResult} A struct containing the reader view result or an error.
+ * @dependencies getReaderView, log
+ */
+func getReaderViewResult(url string) ReaderViewResult {
+	readerView, err := getReaderView(url)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   url,
+			"error": err,
+		}).Error("[ReaderView] Error retrieving content")
+		return ReaderViewResult{
+			URL:    url,
+			Status: "error",
+			Error:  err,
+		}
+	}
+	return ReaderViewResult{
+		URL:         url,
+		Status:      "ok",
+		ReaderView:  readerView.Content,
+		Title:       readerView.Title,
+		SiteName:    readerView.SiteName,
+		Image:       readerView.Image,
+		Favicon:     readerView.Favicon,
+		TextContent: readerView.TextContent,
+	}
+}
+
+/**
+ * @function getReaderViewHandler
+ * @description Handles HTTP requests to the /getreaderview endpoint.
+ *              It expects a POST request with a JSON body containing an array of URLs.
+ *              It retrieves the reader view for each URL, caches the results, and returns a JSON response.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies getReaderViewResult, cache, createHash, log
+ */
+func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		log.WithFields(logrus.Fields{
 			"method": r.Method,
-		}).Warn("[validateURLsHandler] Invalid method")
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}).Warn("[ReaderView] Invalid method")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
-	var req URLValidationRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
+	var urls Urls
+	if err := json.NewDecoder(r.Body).Decode(&urls); err != nil {
 		log.WithFields(logrus.Fields{
 			"error": err,
-		}).Error("[validateURLsHandler] Error decoding request body")
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		}).Error("[ReaderView] Error decoding request body")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
 	var wg sync.WaitGroup
-	statuses := make([]URLStatus, len(req.URLs))
-	for i, url := range req.URLs {
+	results := make([]ReaderViewResult, len(urls.Urls))
+
+	for i, url := range urls.Urls {
 		wg.Add(1)
 		go func(i int, url string) {
 			defer wg.Done()
-			resp, err := httpClient.Get(url)
-			if resp != nil {
-				defer resp.Body.Close()
-			}
-			status := "ok"
-			if err != nil || resp.StatusCode != http.StatusOK {
-				status = "error"
-				if err == nil {
-					status = http.StatusText(resp.StatusCode)
-				}
+
+			cacheKey := createHash(url)
+			var result ReaderViewResult
+
+			if err := cache.Get(readerView_prefix, cacheKey, &result); err != nil {
 				log.WithFields(logrus.Fields{
-					"url":    url,
-					"status": status,
-					"error":  err,
-				}).Warn("[validateURLsHandler] URL validation failed")
+					"url": url,
+				}).Info("[ReaderView] Cache miss")
+				result = getReaderViewResult(url)
+				if len(result.TextContent) < 100 {
+					result.TextContent = `<div id="readability-page-1" class="page"><p id="cmsg">Error getting reader view or site requires subscription. Please open the link in a new tab.</p></div>`
+					result.ReaderView = result.TextContent
+				}
+				if err := cache.Set(readerView_prefix, cacheKey, result, 24*time.Hour); err != nil {
+					log.WithFields(logrus.Fields{
+						"url":   url,
+						"error": err,
+					}).Error("[ReaderView] Failed to cache reader view")
+				}
 			} else {
 				log.WithFields(logrus.Fields{
-					"url":    url,
-					"status": status,
-				}).Debug("[validateURLsHandler] URL validation successful")
+					"url": url,
+				}).Info("[ReaderView] Cache hit")
 			}
-			statuses[i] = URLStatus{URL: url, Status: status}
+			results[i] = result
 		}(i, url)
 	}
-
 	wg.Wait()
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(statuses)
-	if err != nil {
+	if err := json.NewEncoder(w).Encode(results); err != nil {
 		log.WithFields(logrus.Fields{
 			"error": err,
-		}).Error("[validateURLsHandler] Error encoding response")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		}).Error("[ReaderView] Failed to encode JSON")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
 
-//ImageUtils.go
+/**
+ * @function getReaderView
+ * @description Retrieves the reader view of a given URL using the go-readability library.
+ *              It sets a timeout for the request and returns the parsed article or an error.
+ * @param {string} url The URL to retrieve the reader view for.
+ * @returns {readability.Article, error} The parsed article or an error.
+ * @dependencies readability.FromURL, log
+ */
+func getReaderView(url string) (readability.Article, error) {
+	article, err := readability.FromURL(url, 30*time.Second)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   url,
+			"error": err,
+		}).Error("[ReaderView] Failed to parse URL")
+		return readability.Article{}, fmt.Errorf("failed to parse URL: %w", err)
+	}
+	return article, nil
+}
+
+//discover.go
 // Package main provides the main functionality for the web server.
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"image"
-	"image/draw"
+	"errors"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 
-	"golang.org/x/net/html"
-
-	"github.com/EdlinOrg/prominentcolor"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/gocolly/colly"
-	"github.com/mmcdole/gofeed"
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	thumbnailColorPrefix = thumbnailColor_prefix
-	httpTimeout          = 10 * time.Second
-	cacheDuration        = 24 * time.Hour
-	defaultColor         = 128
-	userAgent            = "Mozilla/5.0 (compatible; FeedParser/1.0)"
-	collyUserAgent       = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+var (
+	feedResultPool = &sync.Pool{
+		New: func() interface{} {
+			return &FeedResult{}
+		},
+	}
 )
 
-type ThumbnailFinder struct {
-	cache sync.Map
-}
-
-func NewThumbnailFinder() *ThumbnailFinder {
-	return &ThumbnailFinder{}
-}
-
 /**
- * @function GetMetaData
- * @description Fetches a web page (targetURL) using Colly, extracting Open Graph tags
- * and JSON-LD data to produce a MetaDataResponseItem. It also attempts to discover
- * the favicon and domain if not provided by OG or JSON-LD.
- * @param {string} targetURL The URL to visit and parse.
- * @returns {MetaDataResponseItem, error} On success, returns a struct with combined
- * metadata from both OG tags and JSON-LD. Returns an error if the fetch or parse fails.
- * @dependencies colly.NewCollector, colly.UserAgent, c.OnHTML, c.OnRequest, c.Visit, url.Parse, strconv.Atoi, json.Unmarshal, goquery.Selection, log
+ * @function discoverHandler
+ * @description Handles HTTP requests to the /discover endpoint.
+ *              It expects a POST request with a JSON body containing an array of URLs.
+ *              It attempts to discover the RSS feed URL for each provided URL and returns the results as JSON.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies discoverRssFeedUrl, generateGitHubRssUrl, generateRedditRssUrl, ensureAbsoluteUrl, httpClient, log
  */
-func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
-	// Basic validation
-	if targetURL == "" || targetURL == "http://" || targetURL == "://" || targetURL == "about:blank" {
+func discoverHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
 		log.WithFields(logrus.Fields{
-			"url": targetURL,
-		}).Error("[GetMetaData] URL is empty or invalid")
-		return MetaDataResponseItem{}, fmt.Errorf("URL is empty or invalid")
+			"method": r.Method,
+		}).Warn("[discoverHandler] Invalid method")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-
-	// Prepare the collector with a friendly user agent that tricks sites
-	c := colly.NewCollector(
-		colly.UserAgent(collyUserAgent),
-	)
-
-	// Our enriched metadata struct
-	metaData := MetaDataResponseItem{
-		Images: []WebMedia{},
-		Videos: []WebMedia{},
-	}
-
-	// STEP 1: OnHTML("meta", ...) to capture Open Graph fields.
-	c.OnHTML("meta", func(e *colly.HTMLElement) {
-		property := e.Attr("property")
-		content := e.Attr("content")
-		name := e.Attr("name")
-		if (property == "" && name == "") || content == "" {
-			return
-		}
-
-		// Check for og: fields
-		parts := strings.Split(property, ":")
-		if len(parts) < 2 || parts[0] != "og" {
-			// Check for theme-color
-			if name == "theme-color" {
-				metaData.ThemeColor = content
-			}
-			return
-		}
-
-		switch property {
-		case "og:title":
-			metaData.Title = content
-		case "og:description":
-			metaData.Description = content
-		case "og:site_name":
-			metaData.Sitename = content
-		case "og:url":
-			metaData.URL = content
-		case "og:type":
-			metaData.Type = content
-		case "og:locale":
-			metaData.Locale = content
-		case "og:determiner":
-			metaData.Determiner = content
-
-		// Images
-		case "og:image":
-			metaData.Images = append(metaData.Images, WebMedia{URL: content})
-		case "og:image:width", "og:image:height", "og:image:alt", "og:image:type", "og:image:secure_url":
-			if len(metaData.Images) > 0 {
-				idx := len(metaData.Images) - 1
-				switch property {
-				case "og:image:width":
-					if w, err := strconv.Atoi(content); err == nil {
-						metaData.Images[idx].Width = w
-					}
-				case "og:image:height":
-					if h, err := strconv.Atoi(content); err == nil {
-						metaData.Images[idx].Height = h
-					}
-				case "og:image:alt":
-					metaData.Images[idx].Alt = content
-				case "og:image:type":
-					metaData.Images[idx].Type = content
-				case "og:image:secure_url":
-					metaData.Images[idx].SecureURL = content
-				}
-			}
-
-		// Videos
-		case "og:video:url":
-			metaData.Videos = append(metaData.Videos, WebMedia{URL: content})
-		case "og:video:width", "og:video:height", "og:video:type", "og:video:secure_url", "og:video:duration", "og:video:release_date", "og:video:tag":
-			if len(metaData.Videos) > 0 {
-				idx := len(metaData.Videos) - 1
-				switch property {
-				case "og:video:width":
-					if w, err := strconv.Atoi(content); err == nil {
-						metaData.Videos[idx].Width = w
-					}
-				case "og:video:height":
-					if h, err := strconv.Atoi(content); err == nil {
-						metaData.Videos[idx].Height = h
-					}
-				case "og:video:type":
-					metaData.Videos[idx].Type = content
-				case "og:video:secure_url":
-					metaData.Videos[idx].SecureURL = content
-				case "og:video:duration":
-					if d, err := strconv.Atoi(content); err == nil {
-						metaData.Videos[idx].Duration = d
-					}
-				case "og:video:release_date":
-					metaData.Videos[idx].ReleaseDate = content
-				case "og:video:tag":
-					tags := strings.Split(content, ",")
-					for _, t := range tags {
-						metaData.Videos[idx].Tags = append(metaData.Videos[idx].Tags, strings.TrimSpace(t))
-					}
-				}
-			}
-		}
-	})
-
-	// STEP 2: OnHTML("script[type='application/ld+json']", ...) to parse JSON-LD.
-	c.OnHTML("script[type='application/ld+json']", func(e *colly.HTMLElement) {
-		rawJSON := e.Text
-		// Attempt to parse the JSON-LD
-		var ldData interface{}
-		if err := json.Unmarshal([]byte(rawJSON), &ldData); err == nil {
-			// If we have no JSONLD in metaData, store this entire ldData.
-			// If you want to further parse Title, etc., you can do so here.
-			metaData.Raw = ldData
-			// Optionally, you can write logic to unify some fields from ld+json
-			// with your metaData if you want to override or fill in missing values.
-		}
-	})
-
-	// STEP 3: Attempt domain detection on request
-	c.OnRequest(func(r *colly.Request) {
-		if metaData.Domain == "" {
-			if parsedURL, err := url.Parse(r.URL.String()); err == nil {
-				metaData.Domain = parsedURL.Host
-			}
-		}
-	})
-
-	// STEP 4: After we parse <head>, try to find a favicon if none is set
-	c.OnHTML("head", func(e *colly.HTMLElement) {
-		if metaData.Favicon == "" {
-			e.DOM.Find("link[rel]").Each(func(_ int, s *goquery.Selection) {
-				rel := s.AttrOr("rel", "")
-				href := s.AttrOr("href", "")
-				relValues := strings.Fields(rel)
-				for _, rv := range relValues {
-					if rv == "icon" || rv == "shortcut" || rv == "apple-touch-icon" {
-						if href != "" {
-							metaData.Favicon = e.Request.AbsoluteURL(href)
-							return
-						}
-					}
-				}
-			})
-		}
-	})
-
-	// STEP 5: Visit the target page
-	if err := c.Visit(targetURL); err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   targetURL,
-			"error": err,
-		}).Error("[GetMetaData] Error visiting URL")
-		return MetaDataResponseItem{}, fmt.Errorf("error visiting URL %s: %w", targetURL, err)
-	}
-
-	return metaData, nil
-}
-
-/**
- * @function FindThumbnailForItem
- * @description Finds a thumbnail for a given feed item.
- *              It first checks the cache, then enclosures, then content, and finally fetches metadata.
- * @param {*gofeed.Item} item The feed item to find a thumbnail for.
- * @returns {string} The URL of the thumbnail, or an empty string if no thumbnail was found.
- * @dependencies extractThumbnailFromEnclosures, extractThumbnailFromContent, GetMetaData, log
- */
-func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
-	if thumb, ok := tf.cache.Load(item.Link); ok {
-		log.WithFields(logrus.Fields{
-			"url": item.Link,
-		}).Debug("[FindThumbnailForItem] Found cached thumbnail")
-		return thumb.(string)
-	}
-
-	thumbnail := tf.extractThumbnailFromEnclosures(item.Enclosures)
-	if thumbnail != "" {
-		log.WithFields(logrus.Fields{
-			"url": item.Link,
-		}).Debug("[FindThumbnailForItem] Found thumbnail in enclosures")
-		tf.cache.Store(item.Link, thumbnail)
-		return thumbnail
-	}
-
-	thumbnail = tf.extractThumbnailFromContent(item.Content)
-	if thumbnail != "" {
-		log.WithFields(logrus.Fields{
-			"url": item.Link,
-		}).Debug("[FindThumbnailForItem] Found thumbnail in content")
-		tf.cache.Store(item.Link, thumbnail)
-		return thumbnail
-	}
-
-	if item.Link != "" {
-		log.WithFields(logrus.Fields{
-			"url": item.Link,
-		}).Debug("[FindThumbnailForItem] Fetching metadata")
-		metaData, err := GetMetaData(item.Link)
-		if err != nil {
-			log.WithFields(logrus.Fields{
-				"url":   item.Link,
-				"error": err,
-			}).Error("[FindThumbnailForItem] Error getting metadata")
-			return ""
-		}
-
-		if len(metaData.Images) > 0 {
-			thumbnail = metaData.Images[0].URL
-		}
-		if thumbnail != "" {
-			log.WithFields(logrus.Fields{
-				"url": item.Link,
-			}).Debug("[FindThumbnailForItem] Found thumbnail in metadata")
-			tf.cache.Store(item.Link, thumbnail)
-			return thumbnail
-		}
-
-		return ""
-	}
-	return ""
-}
-
-/**
- * @function extractThumbnailFromEnclosures
- * @description Extracts a thumbnail URL from a list of enclosures.
- * @param {[]*gofeed.Enclosure} enclosures The list of enclosures to search.
- * @returns {string} The URL of the first image enclosure found, or an empty string if none were found.
- */
-func (tf *ThumbnailFinder) extractThumbnailFromEnclosures(enclosures []*gofeed.Enclosure) string {
-	for _, e := range enclosures {
-		if strings.HasPrefix(e.Type, "image/") {
-			return e.URL
-		}
-	}
-	return ""
-}
-
-/**
- * @function extractThumbnailFromContent
- * @description Extracts a thumbnail URL from HTML content.
- * @param {string} content The HTML content to search.
- * @returns {string} The URL of the first image found in the content, or an empty string if none were found.
- * @dependencies goquery.NewDocumentFromReader, log
- */
-func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
+	var urls Urls
+	err := json.NewDecoder(r.Body).Decode(&urls)
 	if err != nil {
 		log.WithFields(logrus.Fields{
 			"error": err,
-		}).Error("[extractThumbnailFromContent] Error parsing content")
-		return ""
+		}).Error("[discoverHandler] Error decoding request body")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
 	}
 
-	if src, exists := doc.Find("img").First().Attr("src"); exists {
-		return src
+	var wg sync.WaitGroup
+	results := make([]FeedResult, len(urls.Urls))
+	for i, url := range urls.Urls {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			feedLink, err := discoverRssFeedUrl(url)
+			result := feedResultPool.Get().(*FeedResult)
+			defer feedResultPool.Put(result)
+			if err != nil {
+				result.URL = url
+				result.Status = "error"
+				result.Error = err.Error()
+				result.FeedLink = ""
+			} else {
+				result.URL = url
+				result.Status = "ok"
+				result.FeedLink = feedLink
+			}
+			results[i] = *result
+		}(i, url)
 	}
-	return ""
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string][]FeedResult{"feeds": results})
 }
 
 /**
- * @function extractColorFromThumbnail_prominentColor
- * @description Extracts the prominent color from an image URL using the prominentcolor library.
- *              It first checks the cache, then validates the URL, downloads the image, decodes it,
- *              and finally extracts the color using the K-means algorithm.
- * @param {string} imageURL The URL of the image to extract the color from.
- * @returns {r, g, b uint8} The red, green, and blue components of the prominent color.
- * @dependencies httpClient, cache, prominentcolor, image.Decode, log
+ * @function discoverRssFeedUrl
+ * @description Attempts to discover the RSS feed URL for a given URL.
+ *              It first checks if the URL is a GitHub or Reddit URL and generates the feed URL accordingly.
+ *              Otherwise, it sends an HTTP GET request to the URL, parses the HTML response,
+ *              and searches for link elements with type="application/rss+xml".
+ * @param {string} urlStr The URL to discover the RSS feed for.
+ * @returns {string, error} The RSS feed URL if found, or an error if not found or an error occurred.
+ * @dependencies generateGitHubRssUrl, generateRedditRssUrl, ensureAbsoluteUrl, httpClient, goquery.NewDocumentFromReader, log
  */
-func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			log.WithFields(logrus.Fields{
-				"url":   imageURL,
-				"panic": rec,
-			}).Error("[extractColorFromThumbnail_prominentColor] Recovered from panic")
-			r, g, b = 128, 128, 128
-		}
-	}()
-
-	if imageURL == "" {
-		return 128, 128, 128
+func discoverRssFeedUrl(urlStr string) (string, error) {
+	if strings.HasPrefix(urlStr, "https://github.com") {
+		return generateGitHubRssUrl(urlStr), nil
 	}
 
-	cachePrefix := thumbnailColorPrefix
-	var cachedColor RGBColor
-
-	// Attempt to retrieve the color from the cache
-	err := cache.Get(cachePrefix, imageURL, &cachedColor)
-	if err == nil {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"color": cachedColor,
-		}).Debug("[extractColorFromThumbnail_prominentColor] Found cached color")
-		return cachedColor.R, cachedColor.G, cachedColor.B
+	if strings.HasPrefix(urlStr, "https://www.reddit.com") {
+		return generateRedditRssUrl(urlStr), nil
 	}
 
-	// Validate the image URL
-	parsedURL, err := url.Parse(imageURL)
-	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Invalid image URL")
-		cacheDefaultColor(imageURL)
-		return 128, 128, 128
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
 	if err != nil {
 		log.WithFields(logrus.Fields{
-			"url":   imageURL,
+			"url":   urlStr,
 			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Error creating request")
-		cacheDefaultColor(imageURL)
-		return 128, 128, 128
+		}).Error("[discoverRssFeedUrl] Error creating request")
+		return "", err
 	}
+
+	// Set a custom User-Agent to avoid being blocked by some websites
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.WithFields(logrus.Fields{
-			"url":   imageURL,
+			"url":   urlStr,
 			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Failed to download image")
-		cacheDefaultColor(imageURL)
-		return 128, 128, 128
-	}
-	defer resp.Body.Close()
-
-	img, _, err := image.Decode(resp.Body)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Failed to decode image")
-		cacheDefaultColor(imageURL)
-		return 128, 128, 128
-	}
-	log.WithFields(logrus.Fields{
-		"url": imageURL,
-	}).Debug("[extractColorFromThumbnail_prominentColor] Starting color extraction")
-
-	bounds := img.Bounds()
-	imgNRGBA := image.NewNRGBA(bounds)
-	draw.Draw(imgNRGBA, bounds, img, bounds.Min, draw.Src)
-
-	if imgNRGBA == nil {
-		log.WithFields(logrus.Fields{
-			"url": imageURL,
-		}).Error("[extractColorFromThumbnail_prominentColor] imgNRGBA is nil")
-		cacheDefaultColor(imageURL)
-		return 128, 128, 128
-	}
-
-	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
-	if err != nil || len(colors) == 0 {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color with background mask")
-		colors, err = prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, nil)
-		if err != nil || len(colors) == 0 {
-			log.WithFields(logrus.Fields{
-				"url":   imageURL,
-				"error": err,
-			}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color without background mask")
-			cacheDefaultColor(imageURL)
-			return 128, 128, 128
-		}
-	}
-
-	if len(colors) > 0 {
-		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"color": extractedColor,
-		}).Debug("[extractColorFromThumbnail_prominentColor] Extracted color")
-		if err := cache.Set(cachePrefix, imageURL, extractedColor, 24*time.Hour); err != nil {
-			log.WithFields(logrus.Fields{
-				"url":   imageURL,
-				"color": extractedColor,
-				"error": err,
-			}).Error("[extractColorFromThumbnail_prominentColor] Failed to cache color")
-		}
-		return extractedColor.R, extractedColor.G, extractedColor.B
-	}
-
-	// Cache the default color if extraction fails
-	cacheDefaultColor(imageURL)
-	return 128, 128, 128
-}
-
-/**
- * @function cacheDefaultColor
- * @description Caches the default color for a given image URL.
- * @param {string} imageURL The URL of the image to cache the default color for.
- * @dependencies cache, log
- */
-func cacheDefaultColor(imageURL string) {
-	cachePrefix := thumbnailColorPrefix
-	defaultColor := RGBColor{defaultColor, defaultColor, defaultColor}
-
-	if err := cache.Set(cachePrefix, imageURL, defaultColor, cacheDuration); err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[cacheDefaultColor] Failed to cache default color")
-	}
-}
-
-/**
- * @function DiscoverFavicon
- * @description Discovers the favicon for a given page URL.
- *              It sends an HTTP GET request to the page, parses the HTML response,
- *              and searches for link elements with rel attributes containing "icon", "shortcut", or "apple-touch-icon".
- * @param {string} pageURL The URL of the page to discover the favicon for.
- * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
- * @dependencies httpClient, html.Parse, findFavicon, url.Parse, log
- */
-func DiscoverFavicon(pageURL string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   pageURL,
-			"error": err,
-		}).Error("[DiscoverFavicon] Error creating request")
-		return ""
-	}
-
-	req.Header.Set("User-Agent", userAgent)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   pageURL,
-			"error": err,
-		}).Error("[DiscoverFavicon] Error fetching page")
-		return ""
+		}).Error("[discoverRssFeedUrl] Error sending request")
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		log.WithFields(logrus.Fields{
-			"url":    pageURL,
-			"status": resp.Status,
-		}).Error("[DiscoverFavicon] Error fetching page")
-		return ""
+			"url":        urlStr,
+			"statusCode": resp.StatusCode,
+		}).Error("[discoverRssFeedUrl] Request failed")
+		return "", errors.New("request failed")
 	}
 
-	doc, err := html.Parse(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		log.WithFields(logrus.Fields{
-			"url":   pageURL,
+			"url":   urlStr,
 			"error": err,
-		}).Error("[DiscoverFavicon] Error parsing HTML")
-		return ""
+		}).Error("[discoverRssFeedUrl] Error parsing HTML")
+		return "", err
 	}
 
-	favicon := findFavicon(doc)
-
-	if favicon != "" && !strings.HasPrefix(favicon, "http") {
-		if parsedFaviconURL, err := url.Parse(favicon); err == nil {
-			if baseURL, err := url.Parse(pageURL); err == nil {
-				favicon = baseURL.ResolveReference(parsedFaviconURL).String()
-			}
-		}
+	rssLink, exists := doc.Find(`link[type="application/rss+xml"]`).Attr("href")
+	if !exists {
+		log.WithFields(logrus.Fields{
+			"url": urlStr,
+		}).Warn("[discoverRssFeedUrl] RSS feed not found in HTML")
+		return "", errors.New("RSS feed not found")
 	}
 
-	return favicon
+	rssLink, err = ensureAbsoluteUrl(urlStr, rssLink)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":     urlStr,
+			"rssLink": rssLink,
+			"error":   err,
+		}).Error("[discoverRssFeedUrl] Error ensuring absolute URL")
+		return "", err
+	}
+
+	return rssLink, nil
 }
 
 /**
- * @function findFavicon
- * @description Recursively searches an HTML node tree for a favicon link.
- * @param {*html.Node} n The root node of the HTML tree to search.
- * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ * @function generateGitHubRssUrl
+ * @description Generates a GitHub RSS feed URL from a GitHub repository URL.
+ * @param {string} url The GitHub repository URL.
+ * @returns {string} The corresponding GitHub RSS feed URL.
  */
-func findFavicon(n *html.Node) string {
-	if n.Type == html.ElementNode && n.Data == "link" {
-		relAttr := ""
-		hrefAttr := ""
-		for _, attr := range n.Attr {
-			if attr.Key == "rel" {
-				relAttr = attr.Val
-			} else if attr.Key == "href" {
-				hrefAttr = attr.Val
-			}
-		}
-
-		relValues := strings.Fields(relAttr)
-		for _, relValue := range relValues {
-			if relValue == "icon" || relValue == "shortcut" || relValue == "apple-touch-icon" {
-				if hrefAttr != "" {
-					return hrefAttr
-				}
-			}
-		}
-	}
-
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		if favicon := findFavicon(c); favicon != "" {
-			return favicon
-		}
-	}
-
-	return ""
+func generateGitHubRssUrl(url string) string {
+	return strings.TrimRight(url, "/") + "/commits/master.atom"
 }
 
 /**
- * @function DiscoverFaviconWithColly
- * @description Discovers the favicon for a given page URL using colly.
- * @param {*colly.Collector} c The colly collector to use for the request.
- * @param {string} pageURL The URL of the page to discover the favicon for.
- * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
- * @dependencies colly.HTMLElement, c.OnHTML, c.Visit
+ * @function generateRedditRssUrl
+ * @description Generates a Reddit RSS feed URL from a Reddit URL.
+ * @param {string} url The Reddit URL.
+ * @returns {string} The corresponding Reddit RSS feed URL.
  */
-func DiscoverFaviconWithColly(c *colly.Collector, pageURL string) string {
-	var favicon string
+func generateRedditRssUrl(url string) string {
+	return strings.TrimRight(url, "/") + "/.rss"
+}
 
-	c.OnHTML("link[rel]", func(e *colly.HTMLElement) {
-		rel := e.Attr("rel")
-		href := e.Attr("href")
-
-		relValues := strings.Fields(rel)
-		for _, relValue := range relValues {
-			if relValue == "icon" || relValue == "shortcut" || relValue == "apple-touch-icon" {
-				if href != "" {
-					favicon = e.Request.AbsoluteURL(href)
-					return
-				}
-			}
+/**
+ * @function ensureAbsoluteUrl
+ * @description Ensures that a given URL is absolute. If the URL is relative, it resolves it against the base URL.
+ * @param {string} baseUrl The base URL to use for resolving relative URLs.
+ * @param {string} relativeOrAbsoluteUrl The URL to ensure is absolute.
+ * @returns {string, error} The absolute URL, or an error if the URL is invalid.
+ * @dependencies url.Parse, url.Parse
+ */
+func ensureAbsoluteUrl(baseUrl, relativeOrAbsoluteUrl string) (string, error) {
+	u, err := url.Parse(relativeOrAbsoluteUrl)
+	if err != nil || !u.IsAbs() {
+		u, err = url.Parse(baseUrl)
+		if err != nil {
+			return "", err
 		}
-	})
-
-	c.Visit(pageURL)
-
-	return favicon
+		rel, err := url.Parse(relativeOrAbsoluteUrl)
+		if err != nil {
+			return "", err
+		}
+		return u.ResolveReference(rel).String(), nil
+	}
+	return relativeOrAbsoluteUrl, nil
 }
 
 //parser.go
@@ -3650,6 +1956,81 @@ func isUpdatedContent(oldIt, newIt FeedResponseItem) bool {
 	return false
 }
 
+//utils.go
+// Package main provides the main functionality for the web server.
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"sync"
+
+	"github.com/sirupsen/logrus"
+)
+
+// validateURLsHandler handles the /validate endpoint
+func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[validateURLsHandler] Invalid method")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req URLValidationRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[validateURLsHandler] Error decoding request body")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var wg sync.WaitGroup
+	statuses := make([]URLStatus, len(req.URLs))
+	for i, url := range req.URLs {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			resp, err := httpClient.Get(url)
+			if resp != nil {
+				defer resp.Body.Close()
+			}
+			status := "ok"
+			if err != nil || resp.StatusCode != http.StatusOK {
+				status = "error"
+				if err == nil {
+					status = http.StatusText(resp.StatusCode)
+				}
+				log.WithFields(logrus.Fields{
+					"url":    url,
+					"status": status,
+					"error":  err,
+				}).Warn("[validateURLsHandler] URL validation failed")
+			} else {
+				log.WithFields(logrus.Fields{
+					"url":    url,
+					"status": status,
+				}).Debug("[validateURLsHandler] URL validation successful")
+			}
+			statuses[i] = URLStatus{URL: url, Status: status}
+		}(i, url)
+	}
+
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	err = json.NewEncoder(w).Encode(statuses)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[validateURLsHandler] Error encoding response")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 //routes.go
 // Package main provides the main functionality for the web server.
 package main
@@ -3923,5 +2304,1624 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 			"error": err,
 		}).Error("[streamAudioHandler] Failed to write audio content to response")
 	}
+}
+
+//dataModel.go
+// Package models defines the data structures used in the application.
+package main
+
+import (
+	"github.com/mmcdole/gofeed"
+)
+
+// ParseRequest represents the expected incoming JSON payload structure.
+// ParseRequest represents the expected JSON body for the /parse endpoint.
+type ParseRequest struct {
+	URLs         []string `json:"urls"`
+	Page         int      `json:"page"`
+	ItemsPerPage int      `json:"itemsperpage"`
+}
+
+type RGBColor struct {
+	R uint8 `json:"r"`
+	G uint8 `json:"g"`
+	B uint8 `json:"b"`
+}
+
+// Add these structs to your existing code
+type MediaContent struct {
+	URL    string `xml:"url,attr"`
+	Width  int    `xml:"width,attr"`
+	Height int    `xml:"height,attr"`
+}
+
+type ExtendedItem struct {
+	*gofeed.Item
+	MediaContent []MediaContent `xml:"http://search.yahoo.com/mrss/ content"`
+}
+
+// FeedResponseItem represents an enriched structure for an individual feed item.
+type FeedResponseItem struct {
+	Type                   string                      `json:"type"`
+	ID                     string                      `json:"id"`
+	Title                  string                      `json:"title"`
+	Description            string                      `json:"description"`
+	Link                   string                      `json:"link"`
+	Author                 string                      `json:"author"`
+	Published              string                      `json:"published"`
+	Content                string                      `json:"content"`
+	Created                string                      `json:"created"`
+	Content_Encoded        string                      `json:"content_encoded"`
+	Categories             string                      `json:"categories"`
+	Enclosures             []*gofeed.Enclosure         `json:"enclosures"`
+	Thumbnail              string                      `json:"thumbnail"`
+	ThumbnailColor         RGBColor                    `json:"thumbnailColor"`
+	ThumbnailColorComputed string                      `json:"thumbnailColorComputed"`
+	EpisodeType            string                      `json:"episodeType,omitempty"`
+	Subtitle               []PodcastTranscriptsDetails `json:"subtitle,omitempty"`
+	Duration               int                         `json:"duration,omitempty"`
+}
+
+// FeedResponse represents the structure for the overall feed, including metadata and items.
+type FeedResponse struct {
+	Type          string              `json:"type"`
+	GUID          string              `json:"guid"`
+	Status        string              `json:"status"`
+	Error         error               `json:"error,omitempty"`
+	SiteTitle     string              `json:"siteTitle"`
+	FeedTitle     string              `json:"feedTitle"`
+	FeedUrl       string              `json:"feedUrl"`
+	Description   string              `json:"description"`
+	Link          string              `json:"link"`
+	LastUpdated   string              `json:"lastUpdated"`
+	LastRefreshed string              `json:"lastRefreshed"`
+	Published     string              `json:"published"`
+	Author        *gofeed.Person      `json:"author"`
+	Language      string              `json:"language"`
+	Favicon       string              `json:"favicon"`
+	SiteImage     string              `json:"siteImage,omitempty"`
+	Categories    string              `json:"categories"`
+	Items         *[]FeedResponseItem `json:"items,omitempty"`
+}
+
+type Feeds struct {
+	Feeds []FeedResponse `json:"feeds"`
+}
+
+type ReaderViewResult struct {
+	URL         string `json:"url"`
+	Status      string `json:"status"`
+	ReaderView  string `json:"content"`
+	Error       error  `json:"error,omitempty"`
+	Title       string `json:"title"`
+	SiteName    string `json:"siteName"`
+	Image       string `json:"image"`
+	Favicon     string `json:"favicon"`
+	TextContent string `json:"textContent"`
+}
+
+type FeedSearchAPIResponseItem struct {
+	Bozo           int      `json:"bozo"`
+	Content_length int      `json:"content_length"`
+	Content_type   string   `json:"content_type"`
+	Description    string   `json:"description"`
+	Favicon        string   `json:"favicon"`
+	Hubs           []string `json:"hubs"`
+	Is_Podcast     bool     `json:"is_podcast"`
+	Is_Push        bool     `json:"is_push"`
+	Item_Count     int      `json:"item_count"`
+	Last_Seen      string   `json:"last_seen"`
+	Last_Updated   string   `json:"last_updated"`
+	Score          float64  `json:"score"`
+	Site_name      string   `json:"site_name"`
+	Site_url       string   `json:"site_url"`
+	Title          string   `json:"title"`
+	Url            string   `json:"url"`
+	Velocity       float64  `json:"velocity"`
+	Version        string   `json:"version"`
+	Self_Url       string   `json:"self_url"`
+}
+
+type FeedSearchResponseItem struct {
+	Title        string  `json:"title"`
+	Url          string  `json:"url"`
+	Site_name    string  `json:"site_name"`
+	Site_url     string  `json:"site_url"`
+	Description  string  `json:"description"`
+	Favicon      string  `json:"favicon"`
+	Is_Podcast   bool    `json:"is_podcast"`
+	Is_Push      bool    `json:"is_push"`
+	Item_Count   int     `json:"item_count"`
+	Last_Seen    string  `json:"last_seen"`
+	Last_Updated string  `json:"last_updated"`
+	Score        float64 `json:"score"`
+}
+
+type PodcastSearchResponseItem struct {
+	Title             string   `json:"title"`
+	Url               string   `json:"url"`
+	Author            string   `json:"author"`
+	Description       string   `json:"description"`
+	FeedImage         string   `json:"feedImage"`
+	Image             string   `json:"image"`
+	Artwork           string   `json:"artwork"`
+	Categories        []string `json:"categories"`
+	PodcastGUID       string   `json:"podcastGuid"`
+	EpisodeCount      int      `json:"episodeCount"`
+	NewestItemPubdate float32  `json:"newestItemPubdate"`
+}
+
+type PodcastAPIResponseItem struct {
+	Id                     int                         `json:"id"`
+	Title                  string                      `json:"title"`
+	Url                    string                      `json:"url"`
+	OriginalUrl            string                      `json:"originalUrl"`
+	Link                   string                      `json:"link"`
+	Description            string                      `json:"description"`
+	Author                 string                      `json:"author"`
+	Language               string                      `json:"language"`
+	OwnerName              string                      `json:"ownerName"`
+	Image                  string                      `json:"image"`
+	Artwork                string                      `json:"artwork"`
+	FeedImage              string                      `json:"feedImage"`
+	FeedID                 string                      `json:"feedId"`
+	PodcastGUID            string                      `json:"podcastGuid"`
+	LastUpdatedTime        string                      `json:"lastUpdatedTime"`
+	LastCrawlTime          int                         `json:"lastCrawlTime"`
+	LastParseTime          int                         `json:"lastParseTime"`
+	InPollingQueue         int                         `json:"inPollingQueue"`
+	Priority               int                         `json:"priority"`
+	LastGoodHttpStatusTime int                         `json:"lastGoodHttpStatusTime"`
+	LastHttpStatus         int                         `json:"lastHttpStatus"`
+	ContentType            string                      `json:"contentType"`
+	ItunedId               int                         `json:"itunedId"`
+	Generator              string                      `json:"generator"`
+	Dead                   int                         `json:"dead"`
+	CrawlErrors            int                         `json:"crawlErrors"`
+	ParseErrors            int                         `json:"parseErrors"`
+	Categories             []string                    `json:"podCast_Categories"`
+	Locked                 int                         `json:"locked"`
+	Medium                 string                      `json:"medium"`
+	EpisodeCount           int                         `json:"episodeCount"`
+	ImageUrlHash           float64                     `json:"imageUrlHash"`
+	NewestItemPubdate      float32                     `json:"newestItemPubdate"`
+	Transcripts            []PodcastTranscriptsDetails `json:"transcripts"`
+}
+
+type PodcastTranscriptsDetails struct {
+	Url  string                 `json:"url"`
+	Type PodcastTranscriptsType `json:"type"`
+}
+
+type PodcastTranscriptsType string
+
+// Define constants of the custom type
+const (
+	TextHTML       PodcastTranscriptsType = "text/html"
+	ApplicationSRT PodcastTranscriptsType = "application/srt"
+	ApplicationVTT PodcastTranscriptsType = "application/vtt"
+)
+
+type PodcastSearchAPIResponse struct {
+	Items       []PodcastAPIResponseItem `json:"feeds"`
+	Status      string                   `json:"status"`
+	Count       int                      `json:"count"`
+	Query       string                   `json:"query"`
+	Description string                   `json:"description"`
+}
+
+type TTSRequest struct {
+	Text         string `json:"text"`
+	LanguageCode string `json:"languageCode"`
+	SsmlGender   string `json:"ssmlGender"`
+	VoiceName    string `json:"voiceName"`
+	Url          string `json:"url"`
+}
+
+// MetaData Items
+type MetaDataResponseItem struct {
+	Title       string      `json:"title"`
+	Description string      `json:"description"`
+	Images      []WebMedia  `json:"images"`
+	Type        string      `json:"type"`
+	Sitename    string      `json:"sitename"`
+	Favicon     string      `json:"favicon"`
+	Duration    int         `json:"duration"`
+	Domain      string      `json:"domain"`
+	URL         string      `json:"url"`
+	Videos      []WebMedia  `json:"videos"`
+	Locale      string      `json:"locale,omitempty"`
+	Determiner  string      `json:"determiner,omitempty"`
+	Raw         interface{} `json:"raw,omitempty"`
+	ThemeColor  string      `json:"themeColor,omitempty"`
+}
+
+// WebMedia captures info about images/videos, including optional metadata.
+type WebMedia struct {
+	URL         string   `json:"url"`
+	Alt         string   `json:"alt,omitempty"`
+	Type        string   `json:"type,omitempty"`
+	Width       int      `json:"width,omitempty"`
+	Height      int      `json:"height,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	SecureURL   string   `json:"secure_url,omitempty"`
+	Duration    int      `json:"duration,omitempty"`
+	ReleaseDate string   `json:"release_date,omitempty"`
+}
+
+// Urls represents a list of URLs in a JSON payload.
+type Urls struct {
+	Urls []string `json:"urls"`
+}
+
+// FeedResult represents the result of discovering an RSS feed for a URL.
+type FeedResult struct {
+	URL      string `json:"url"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+	FeedLink string `json:"feedLink"`
+}
+
+// createShareRequest represents the expected JSON body for the /create endpoint.
+type createShareRequest struct {
+	Urls []string `json:"urls"`
+}
+
+// fetchShareRequest represents the expected JSON body for the /share endpoint.
+type fetchShareRequest struct {
+	Key string `json:"key"`
+}
+
+// URLValidationRequest represents the request format for URL validation
+type URLValidationRequest struct {
+	URLs []string `json:"urls"`
+}
+
+// URLStatus represents the status of a single URL validation
+type URLStatus struct {
+	URL    string `json:"url"`
+	Status string `json:"status"`
+}
+
+// CONSTANTS
+
+const redis_password = ""
+const redis_db = 0
+const feed_prefix = "feed:"
+const metaData_prefix = "metaData:"
+const readerView_prefix = "readerViewContent:"
+const feedsearch_prefix = "feedsearch:"
+const thumbnailColor_prefix = "thumbnailColor:"
+
+const audio_prefix = "tts:"
+
+const DefaultRed = uint8(128)
+const DefaultGreen = uint8(128)
+const DefaultBlue = uint8(128)
+
+//redisCache.go
+// Package digestsCache provides caching implementations.
+package digestsCache
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"time"
+
+	"github.com/nitishm/go-rejson/v4"
+	"github.com/redis/go-redis/v9"
+	"github.com/sirupsen/logrus"
+)
+
+var ctx = context.Background()
+var log = logrus.New()
+
+type RedisCache struct {
+	client  *redis.Client
+	handler *rejson.Handler
+}
+
+type FeedItem struct {
+	GUID    string `json:"guid"`
+	FeedUrl string `json:"feedUrl"`
+	// Include other fields as necessary.
+}
+
+func NewRedisCache(addr string, password string, db int) (*RedisCache, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: password,
+		DB:       db,
+	})
+
+	_, err := client.Ping(context.Background()).Result()
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"address":  addr,
+			"database": db,
+		}).Error("Failed to connect to Redis")
+		return nil, err
+	}
+
+	handler := rejson.NewReJSONHandler()
+	handler.SetGoRedisClient(client)
+
+	return &RedisCache{client: client, handler: handler}, nil
+}
+
+func (cache *RedisCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
+	_, err := cache.handler.JSONSet(prefix+":"+key, ".", value)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to set key in Redis")
+		return err
+	}
+
+	if expiration != 0 {
+		err = cache.client.Expire(ctx, prefix+":"+key, expiration).Err()
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"key": key,
+			}).Error("Failed to set expiration for key in Redis")
+		}
+	}
+
+	return err
+}
+
+func (cache *RedisCache) Get(prefix string, key string, dest interface{}) error {
+	val, err := cache.handler.JSONGet(prefix+":"+key, ".")
+	if err != nil {
+		if err == redis.Nil {
+			log.WithFields(logrus.Fields{
+				"key": key,
+			}).Info("Key not found in Redis")
+			return ErrCacheMiss // Use the common ErrCacheMiss
+		}
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to get key from Redis")
+		return err
+	}
+
+	// Convert val to []byte, then to string
+	valStr := string(val.([]byte))
+
+	err = json.Unmarshal([]byte(valStr), dest)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to unmarshal value for key from Redis")
+	}
+
+	return err
+}
+
+func (cache *RedisCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
+	ctx := context.Background()                               // Create a new context
+	keys, err := cache.client.Keys(ctx, prefix+":*").Result() // Pass the context to the Keys method
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Failed to get keys from Redis")
+		return nil, err
+	}
+
+	var urls []string
+	for _, key := range keys {
+		var feedItem FeedItem
+		actualKey := strings.TrimPrefix(key, prefix+":") // Remove the prefix from the key
+		err := cache.Get(prefix, actualKey, &feedItem)
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"key":   actualKey,
+				"error": err,
+			}).Error("Failed to get value from Redis")
+			continue
+		}
+
+		if feedItem.FeedUrl != "" {
+			urls = append(urls, feedItem.FeedUrl)
+		}
+	}
+
+	return urls, nil
+}
+
+func (cache *RedisCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
+	// Fetch existing items from cache
+	var existingItems []FeedItem
+	err := cache.Get(prefix, key, &existingItems)
+	if err != nil && err != redis.Nil {
+		return err
+	}
+
+	// Deduplication based on GUID
+	itemMap := make(map[string]FeedItem)
+	for _, item := range existingItems {
+		itemMap[item.GUID] = item
+	}
+	for _, newItem := range newItems {
+		itemMap[newItem.GUID] = newItem // This will replace existing items with the same GUID or add new ones
+	}
+
+	// Convert map back to slice
+	uniqueItems := make([]FeedItem, 0, len(itemMap))
+	for _, item := range itemMap {
+		uniqueItems = append(uniqueItems, item)
+	}
+
+	// Cache the deduplicated slice of items
+	return cache.Set(prefix, key, uniqueItems, expiration)
+}
+
+func (cache *RedisCache) Count() (int64, error) {
+	return cache.client.DBSize(ctx).Result()
+}
+
+//goCache.go
+// Package digestsCache provides caching implementations.
+package digestsCache
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/patrickmn/go-cache"
+	"github.com/sirupsen/logrus"
+)
+
+type GoCache struct {
+	cache *cache.Cache
+}
+
+var ErrCacheMiss = errors.New("cache: key not found")
+
+func NewGoCache(defaultExpiration, cleanupInterval time.Duration) *GoCache {
+	c := cache.New(defaultExpiration, cleanupInterval)
+	return &GoCache{cache: c}
+}
+
+func (c *GoCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
+	fullKey := prefix + ":" + key
+	valBytes, err := json.Marshal(value)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to marshal value for key")
+		return err
+	}
+	c.cache.Set(fullKey, valBytes, expiration)
+	return nil
+}
+
+func (c *GoCache) Get(prefix string, key string, dest interface{}) error {
+	fullKey := prefix + ":" + key
+	val, found := c.cache.Get(fullKey)
+	if !found {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Info("Key not found in cache")
+		return ErrCacheMiss
+	}
+
+	valBytes, ok := val.([]byte)
+	if !ok {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to assert type of cached value")
+		return ErrCacheMiss // Or define a more appropriate error
+	}
+
+	err := json.Unmarshal(valBytes, dest)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to unmarshal cached value")
+		return err
+	}
+
+	return nil
+}
+
+func (c *GoCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
+	var urls []string
+	for k, v := range c.cache.Items() {
+		if strings.HasPrefix(k, prefix+":") {
+			var feedItem FeedItem
+			err := json.Unmarshal(v.Object.([]byte), &feedItem)
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					"key":   k,
+					"error": err,
+				}).Error("Failed to unmarshal value from cache")
+				continue
+			}
+
+			if feedItem.FeedUrl != "" {
+				urls = append(urls, feedItem.FeedUrl)
+			}
+		}
+	}
+	return urls, nil
+}
+
+func (c *GoCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
+	var existingItems []FeedItem
+	err := c.Get(prefix, key, &existingItems)
+	if err != nil && err != ErrCacheMiss {
+		return err
+	}
+
+	itemMap := make(map[string]FeedItem)
+	for _, item := range existingItems {
+		itemMap[item.GUID] = item
+	}
+	for _, newItem := range newItems {
+		itemMap[newItem.GUID] = newItem
+	}
+
+	uniqueItems := make([]FeedItem, 0, len(itemMap))
+	for _, item := range itemMap {
+		uniqueItems = append(uniqueItems, item)
+	}
+
+	return c.Set(prefix, key, uniqueItems, expiration)
+}
+
+func (c *GoCache) Count() (int64, error) {
+	return int64(c.cache.ItemCount()), nil
+}
+
+//cacheInterface.go
+// Package digestsCache provides caching implementations.
+package digestsCache
+
+import "time"
+
+// Cache is the interface that defines the methods for a cache implementation.
+type Cache interface {
+	Set(prefix string, key string, value interface{}, expiration time.Duration) error
+	Get(prefix string, key string, dest interface{}) error
+	GetSubscribedListsFromCache(prefix string) ([]string, error)
+	SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error
+	Count() (int64, error)
+}
+
+//sqliteCache.go
+// Package digestsCache provides caching implementations.
+package digestsCache
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	"github.com/sirupsen/logrus"
+)
+
+// SQLiteCache implements the Cache interface using a local SQLite database.
+type SQLiteCache struct {
+	db *sql.DB
+}
+
+var ErrSQLCacheMiss = errors.New("sqlite cache: key not found or expired")
+
+// NewSQLiteCache creates a new SQLiteCache instance and initializes the database schema.
+func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		logrus.WithField("dbPath", dbPath).Error("Failed to open SQLite database")
+		return nil, err
+	}
+
+	// Enable WAL mode for better performance
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		logrus.WithError(err).Error("Failed to enable WAL mode")
+	}
+
+	// Create the cache table if it doesn't exist
+	schema := `
+	CREATE TABLE IF NOT EXISTS cache (
+		id TEXT PRIMARY KEY,
+		data TEXT NOT NULL,
+		expiration INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_expiration ON cache (expiration);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		logrus.WithField("error", err).Error("Failed to create cache table in SQLite")
+		return nil, err
+	}
+
+	return &SQLiteCache{db: db}, nil
+}
+
+// Set inserts or updates a key in the SQLite database with an expiration time.
+// prefix:key is used as the primary key.
+func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
+	fullKey := prefix + ":" + key
+
+	valBytes, err := json.Marshal(value)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to marshal value for key (SQLite)")
+		return err
+	}
+
+	expirationUnix := time.Now().Add(expiration).Unix()
+	if expiration == 0 {
+		// If expiration is 0, set a large expiration in the distant future
+		expirationUnix = time.Now().AddDate(10, 0, 0).Unix()
+	}
+
+	// Use a transaction for better performance
+	tx, err := c.db.Begin()
+	if err != nil {
+		logrus.WithError(err).Error("Failed to begin transaction")
+		return err
+	}
+	defer tx.Rollback() // Rollback is safe to call even if the transaction was committed
+
+	stmt := `
+	INSERT INTO cache(id, data, expiration)
+	VALUES(?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		data=excluded.data,
+		expiration=excluded.expiration;
+	`
+
+	_, err = tx.Exec(stmt, fullKey, valBytes, expirationUnix)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"key":   fullKey,
+			"error": err,
+		}).Error("Failed to set key in SQLite cache")
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		logrus.WithError(err).Error("Failed to commit transaction")
+		return err
+	}
+
+	return nil
+}
+
+// Get retrieves a key from the SQLite database and unmarshals it into dest.
+// If the key is expired or missing, it returns an error.
+func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
+	fullKey := prefix + ":" + key
+
+	stmt := `
+	SELECT data, expiration FROM cache
+	WHERE id = ? AND expiration > ?
+	LIMIT 1;
+	`
+
+	row := c.db.QueryRow(stmt, fullKey, time.Now().Unix())
+
+	var (
+		data       []byte
+		expiration int64
+	)
+	err := row.Scan(&data, &expiration)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			logrus.WithFields(logrus.Fields{
+				"key": fullKey,
+			}).Debug("Key not found in SQLite cache")
+			return ErrCacheMiss
+		}
+		logrus.WithFields(logrus.Fields{
+			"key":   fullKey,
+			"error": err,
+		}).Error("Failed to read key from SQLite cache")
+		return err
+	}
+
+	// Unmarshal data into dest
+	if err := json.Unmarshal(data, dest); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"key": fullKey,
+		}).Error("Failed to unmarshal value from SQLite cache")
+		return err
+	}
+
+	return nil
+}
+
+// GetSubscribedListsFromCache scans the cache table for records that start with prefix:
+// and attempts to unmarshal them into a FeedItem to extract the FeedUrl.
+func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
+	var urls []string
+
+	stmt := `
+	SELECT id, data FROM cache
+	WHERE id LIKE ? AND expiration > ?;
+	`
+	rows, err := c.db.Query(stmt, prefix+":%", time.Now().Unix())
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Failed to query SQLite cache for subscribed lists")
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			fullKey string
+			data    []byte
+		)
+		if err := rows.Scan(&fullKey, &data); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"error": err,
+			}).Error("Failed to scan SQLite cache row")
+			continue
+		}
+
+		var feedItem FeedItem
+		if err := json.Unmarshal(data, &feedItem); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"key":   fullKey,
+				"error": err,
+			}).Error("Failed to unmarshal value from SQLite cache")
+			continue
+		}
+
+		if feedItem.FeedUrl != "" {
+			urls = append(urls, feedItem.FeedUrl)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Error iterating SQLite cache rows")
+		return nil, err
+	}
+
+	return urls, nil
+}
+
+// SetFeedItems fetches existing feed items from the cache, deduplicates them with newItems,
+// then updates the cache with the merged slice.
+func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
+	var existingItems []FeedItem
+	err := c.Get(prefix, key, &existingItems)
+	if err != nil && !errors.Is(err, ErrCacheMiss) && !errors.Is(err, ErrSQLCacheMiss) {
+		return err
+	}
+
+	// Deduplicate
+	itemMap := make(map[string]FeedItem)
+	for _, item := range existingItems {
+		itemMap[item.GUID] = item
+	}
+	for _, newItem := range newItems {
+		itemMap[newItem.GUID] = newItem
+	}
+
+	uniqueItems := make([]FeedItem, 0, len(itemMap))
+	for _, item := range itemMap {
+		uniqueItems = append(uniqueItems, item)
+	}
+
+	return c.Set(prefix, key, uniqueItems, expiration)
+}
+
+// Count returns the total number of items in the cache (including expired items).
+func (c *SQLiteCache) Count() (int64, error) {
+	stmt := `SELECT COUNT(*) FROM cache;`
+	var count int64
+	err := c.db.QueryRow(stmt).Scan(&count)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Failed to count items in SQLite cache")
+		return 0, err
+	}
+	return count, nil
+}
+
+//server.go
+package main
+
+import (
+	"compress/gzip"
+	"flag"
+	"net/http"
+	_ "net/http/pprof"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	digestsCache "digests-app-api/cache"
+
+	"github.com/rs/cors"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/time/rate"
+)
+
+var (
+	limiter       = rate.NewLimiter(5, 15) // e.g., 5 requests/sec, burst 15
+	cache         digestsCache.Cache
+	log           = logrus.New()
+	urlList       []string
+	urlListMutex  = &sync.Mutex{}
+	refresh_timer = 60
+	redis_address = "localhost:6379"
+	numWorkers    = runtime.NumCPU()
+	cacheMutex    = &sync.Mutex{}
+	httpClient    = &http.Client{Timeout: 20 * time.Second}
+	cachePeriod   = 30
+)
+
+func main() {
+	// Start pprof profiling in a goroutine
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
+	port := flag.String("port", "8000", "port to run the application on")
+	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
+	redis := flag.String("redis", "localhost:6379", "redis address")
+	flag.Parse()
+
+	mux := http.NewServeMux()
+	log.Infof("Number of workers: %v", numWorkers)
+
+	// Setup routes
+	InitializeRoutes(mux)
+
+	// Wrap mux with middlewares
+	var handler http.Handler = mux
+
+	// 1) Recover from panics
+	handler = errorRecoveryMiddleware(handler)
+
+	// 2) CORS
+	handler = cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodOptions, http.MethodPut, http.MethodDelete},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization"},
+		AllowCredentials: true,
+	}).Handler(handler)
+
+	// 3) Rate limit
+	handler = RateLimitMiddleware(handler)
+
+	// 4) GZIP compression
+	handler = GzipMiddleware(handler)
+
+	// Cache setup
+	redis_address = *redis
+	log.Info("Opening cache connection...")
+
+	redisCache, redisErr := digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
+	if redisErr != nil {
+		log.Warnf("Failed to open Redis cache (%v); falling back to in-memory cache", redisErr)
+		cache = digestsCache.NewGoCache(5*time.Minute, 10*time.Minute)
+	} else {
+		cache = redisCache
+	}
+
+	cachesize, cacheerr := cache.Count()
+	if cacheerr != nil {
+		log.Errorf("Failed to get cache size: %v", cacheerr)
+	} else {
+		log.Infof("Cache has %d items", cachesize)
+	}
+
+	// Set refresh timer from command-line
+	refresh_timer = *timer
+	refreshFeeds()
+
+	// Periodic refresh
+	go func() {
+		ticker := time.NewTicker(time.Duration(refresh_timer*4) * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			log.Info("Refreshing cache (periodic)...")
+			refreshFeeds()
+			log.Infof("Cache refreshed at %v, urlList=%v", time.Now().Format(time.RFC3339), urlList)
+		}
+	}()
+
+	log.Infof("Server is starting on port %v", *port)
+	log.Infof("Refresh timer is %v minutes", refresh_timer)
+	log.Infof("Redis address is %v", redis_address)
+
+	err := http.ListenAndServe(":"+*port, handler)
+	if err != nil {
+		log.Fatalf("Server failed to start: %v", err)
+	}
+}
+
+// errorRecoveryMiddleware ensures the server recovers from unexpected panics
+func errorRecoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Errorf("Panic recovered: %v", rec)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// GzipMiddleware adds gzip compression
+func GzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		wrw := gzipResponseWriter{ResponseWriter: w}
+		wrw.Header().Set("Content-Encoding", "gzip")
+		defer wrw.Flush()
+
+		next.ServeHTTP(&wrw, r)
+	})
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+	writer      *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.Header().Del("Content-Length")
+		w.writer = gzip.NewWriter(w.ResponseWriter)
+		w.wroteHeader = true
+	}
+	return w.writer.Write(b)
+}
+
+func (w *gzipResponseWriter) WriteHeader(status int) {
+	w.ResponseWriter.WriteHeader(status)
+	if w.wroteHeader && w.writer != nil {
+		w.writer.Close()
+	}
+}
+
+func (w *gzipResponseWriter) Flush() {
+	if w.wroteHeader {
+		_ = w.writer.Flush()
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// RateLimitMiddleware applies a rate limiter
+func RateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !limiter.Allow() {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+//ImageUtils.go
+// Package main provides the main functionality for the web server.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/draw"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/net/html"
+
+	"github.com/EdlinOrg/prominentcolor"
+	"github.com/PuerkitoBio/goquery"
+	"github.com/gocolly/colly"
+	"github.com/mmcdole/gofeed"
+	"github.com/sirupsen/logrus"
+)
+
+const (
+	thumbnailColorPrefix = thumbnailColor_prefix
+	httpTimeout          = 10 * time.Second
+	cacheDuration        = 24 * time.Hour
+	defaultColor         = 128
+	userAgent            = "Mozilla/5.0 (compatible; FeedParser/1.0)"
+	collyUserAgent       = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+)
+
+type ThumbnailFinder struct {
+	cache sync.Map
+}
+
+func NewThumbnailFinder() *ThumbnailFinder {
+	return &ThumbnailFinder{}
+}
+
+/**
+ * @function GetMetaData
+ * @description Fetches a web page (targetURL) using Colly, extracting Open Graph tags
+ * and JSON-LD data to produce a MetaDataResponseItem. It also attempts to discover
+ * the favicon and domain if not provided by OG or JSON-LD.
+ * @param {string} targetURL The URL to visit and parse.
+ * @returns {MetaDataResponseItem, error} On success, returns a struct with combined
+ * metadata from both OG tags and JSON-LD. Returns an error if the fetch or parse fails.
+ * @dependencies colly.NewCollector, colly.UserAgent, c.OnHTML, c.OnRequest, c.Visit, url.Parse, strconv.Atoi, json.Unmarshal, goquery.Selection, log
+ */
+func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
+	// Basic validation
+	if targetURL == "" || targetURL == "http://" || targetURL == "://" || targetURL == "about:blank" {
+		log.WithFields(logrus.Fields{
+			"url": targetURL,
+		}).Error("[GetMetaData] URL is empty or invalid")
+		return MetaDataResponseItem{}, fmt.Errorf("URL is empty or invalid")
+	}
+
+	// Prepare the collector with a friendly user agent that tricks sites
+	c := colly.NewCollector(
+		colly.UserAgent(collyUserAgent),
+	)
+
+	// Our enriched metadata struct
+	metaData := MetaDataResponseItem{
+		Images: []WebMedia{},
+		Videos: []WebMedia{},
+	}
+
+	// STEP 1: OnHTML("meta", ...) to capture Open Graph fields.
+	c.OnHTML("meta", func(e *colly.HTMLElement) {
+		property := e.Attr("property")
+		content := e.Attr("content")
+		name := e.Attr("name")
+		if (property == "" && name == "") || content == "" {
+			return
+		}
+
+		// Check for og: fields
+		parts := strings.Split(property, ":")
+		if len(parts) < 2 || parts[0] != "og" {
+			// Check for theme-color
+			if name == "theme-color" {
+				metaData.ThemeColor = content
+			}
+			return
+		}
+
+		switch property {
+		case "og:title":
+			metaData.Title = content
+		case "og:description":
+			metaData.Description = content
+		case "og:site_name":
+			metaData.Sitename = content
+		case "og:url":
+			metaData.URL = content
+		case "og:type":
+			metaData.Type = content
+		case "og:locale":
+			metaData.Locale = content
+		case "og:determiner":
+			metaData.Determiner = content
+
+		// Images
+		case "og:image":
+			metaData.Images = append(metaData.Images, WebMedia{URL: content})
+		case "og:image:width", "og:image:height", "og:image:alt", "og:image:type", "og:image:secure_url":
+			if len(metaData.Images) > 0 {
+				idx := len(metaData.Images) - 1
+				switch property {
+				case "og:image:width":
+					if w, err := strconv.Atoi(content); err == nil {
+						metaData.Images[idx].Width = w
+					}
+				case "og:image:height":
+					if h, err := strconv.Atoi(content); err == nil {
+						metaData.Images[idx].Height = h
+					}
+				case "og:image:alt":
+					metaData.Images[idx].Alt = content
+				case "og:image:type":
+					metaData.Images[idx].Type = content
+				case "og:image:secure_url":
+					metaData.Images[idx].SecureURL = content
+				}
+			}
+
+		// Videos
+		case "og:video:url":
+			metaData.Videos = append(metaData.Videos, WebMedia{URL: content})
+		case "og:video:width", "og:video:height", "og:video:type", "og:video:secure_url", "og:video:duration", "og:video:release_date", "og:video:tag":
+			if len(metaData.Videos) > 0 {
+				idx := len(metaData.Videos) - 1
+				switch property {
+				case "og:video:width":
+					if w, err := strconv.Atoi(content); err == nil {
+						metaData.Videos[idx].Width = w
+					}
+				case "og:video:height":
+					if h, err := strconv.Atoi(content); err == nil {
+						metaData.Videos[idx].Height = h
+					}
+				case "og:video:type":
+					metaData.Videos[idx].Type = content
+				case "og:video:secure_url":
+					metaData.Videos[idx].SecureURL = content
+				case "og:video:duration":
+					if d, err := strconv.Atoi(content); err == nil {
+						metaData.Videos[idx].Duration = d
+					}
+				case "og:video:release_date":
+					metaData.Videos[idx].ReleaseDate = content
+				case "og:video:tag":
+					tags := strings.Split(content, ",")
+					for _, t := range tags {
+						metaData.Videos[idx].Tags = append(metaData.Videos[idx].Tags, strings.TrimSpace(t))
+					}
+				}
+			}
+		}
+	})
+
+	// STEP 2: OnHTML("script[type='application/ld+json']", ...) to parse JSON-LD.
+	c.OnHTML("script[type='application/ld+json']", func(e *colly.HTMLElement) {
+		rawJSON := e.Text
+		// Attempt to parse the JSON-LD
+		var ldData interface{}
+		if err := json.Unmarshal([]byte(rawJSON), &ldData); err == nil {
+			// If we have no JSONLD in metaData, store this entire ldData.
+			// If you want to further parse Title, etc., you can do so here.
+			metaData.Raw = ldData
+			// Optionally, you can write logic to unify some fields from ld+json
+			// with your metaData if you want to override or fill in missing values.
+		}
+	})
+
+	// STEP 3: Attempt domain detection on request
+	c.OnRequest(func(r *colly.Request) {
+		if metaData.Domain == "" {
+			if parsedURL, err := url.Parse(r.URL.String()); err == nil {
+				metaData.Domain = parsedURL.Host
+			}
+		}
+	})
+
+	// STEP 4: After we parse <head>, try to find a favicon if none is set
+	c.OnHTML("head", func(e *colly.HTMLElement) {
+		if metaData.Favicon == "" {
+			e.DOM.Find("link[rel]").Each(func(_ int, s *goquery.Selection) {
+				rel := s.AttrOr("rel", "")
+				href := s.AttrOr("href", "")
+				relValues := strings.Fields(rel)
+				for _, rv := range relValues {
+					if rv == "icon" || rv == "shortcut" || rv == "apple-touch-icon" {
+						if href != "" {
+							metaData.Favicon = e.Request.AbsoluteURL(href)
+							return
+						}
+					}
+				}
+			})
+		}
+	})
+
+	// STEP 5: Visit the target page
+	if err := c.Visit(targetURL); err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   targetURL,
+			"error": err,
+		}).Error("[GetMetaData] Error visiting URL")
+		return MetaDataResponseItem{}, fmt.Errorf("error visiting URL %s: %w", targetURL, err)
+	}
+
+	return metaData, nil
+}
+
+/**
+ * @function FindThumbnailForItem
+ * @description Finds a thumbnail for a given feed item.
+ *              It first checks the cache, then enclosures, then content, and finally fetches metadata.
+ * @param {*gofeed.Item} item The feed item to find a thumbnail for.
+ * @returns {string} The URL of the thumbnail, or an empty string if no thumbnail was found.
+ * @dependencies extractThumbnailFromEnclosures, extractThumbnailFromContent, GetMetaData, log
+ */
+func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
+	if thumb, ok := tf.cache.Load(item.Link); ok {
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found cached thumbnail")
+		return thumb.(string)
+	}
+
+	thumbnail := tf.extractThumbnailFromEnclosures(item.Enclosures)
+	if thumbnail != "" {
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found thumbnail in enclosures")
+		tf.cache.Store(item.Link, thumbnail)
+		return thumbnail
+	}
+
+	thumbnail = tf.extractThumbnailFromContent(item.Content)
+	if thumbnail != "" {
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found thumbnail in content")
+		tf.cache.Store(item.Link, thumbnail)
+		return thumbnail
+	}
+
+	if item.Link != "" {
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Fetching metadata")
+		metaData, err := GetMetaData(item.Link)
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"url":   item.Link,
+				"error": err,
+			}).Error("[FindThumbnailForItem] Error getting metadata")
+			return ""
+		}
+
+		if len(metaData.Images) > 0 {
+			thumbnail = metaData.Images[0].URL
+		}
+		if thumbnail != "" {
+			log.WithFields(logrus.Fields{
+				"url": item.Link,
+			}).Debug("[FindThumbnailForItem] Found thumbnail in metadata")
+			tf.cache.Store(item.Link, thumbnail)
+			return thumbnail
+		}
+
+		return ""
+	}
+	return ""
+}
+
+/**
+ * @function extractThumbnailFromEnclosures
+ * @description Extracts a thumbnail URL from a list of enclosures.
+ * @param {[]*gofeed.Enclosure} enclosures The list of enclosures to search.
+ * @returns {string} The URL of the first image enclosure found, or an empty string if none were found.
+ */
+func (tf *ThumbnailFinder) extractThumbnailFromEnclosures(enclosures []*gofeed.Enclosure) string {
+	for _, e := range enclosures {
+		if strings.HasPrefix(e.Type, "image/") {
+			return e.URL
+		}
+	}
+	return ""
+}
+
+/**
+ * @function extractThumbnailFromContent
+ * @description Extracts a thumbnail URL from HTML content.
+ * @param {string} content The HTML content to search.
+ * @returns {string} The URL of the first image found in the content, or an empty string if none were found.
+ * @dependencies goquery.NewDocumentFromReader, log
+ */
+func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[extractThumbnailFromContent] Error parsing content")
+		return ""
+	}
+
+	if src, exists := doc.Find("img").First().Attr("src"); exists {
+		return src
+	}
+	return ""
+}
+
+/**
+ * @function extractColorFromThumbnail_prominentColor
+ * @description Extracts the prominent color from an image URL using the prominentcolor library.
+ *              It first checks the cache, then validates the URL, downloads the image, decodes it,
+ *              and finally extracts the color using the K-means algorithm.
+ * @param {string} imageURL The URL of the image to extract the color from.
+ * @returns {r, g, b uint8} The red, green, and blue components of the prominent color.
+ * @dependencies httpClient, cache, prominentcolor, image.Decode, log
+ */
+func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"panic": rec,
+			}).Error("[extractColorFromThumbnail_prominentColor] Recovered from panic")
+			r, g, b = 128, 128, 128
+		}
+	}()
+
+	if imageURL == "" {
+		return 128, 128, 128
+	}
+
+	cachePrefix := thumbnailColorPrefix
+	var cachedColor RGBColor
+
+	// Attempt to retrieve the color from the cache
+	err := cache.Get(cachePrefix, imageURL, &cachedColor)
+	if err == nil {
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"color": cachedColor,
+		}).Debug("[extractColorFromThumbnail_prominentColor] Found cached color")
+		return cachedColor.R, cachedColor.G, cachedColor.B
+	}
+
+	// Validate the image URL
+	parsedURL, err := url.Parse(imageURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Invalid image URL")
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Error creating request")
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Failed to download image")
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+	defer resp.Body.Close()
+
+	img, _, err := image.Decode(resp.Body)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Failed to decode image")
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+	log.WithFields(logrus.Fields{
+		"url": imageURL,
+	}).Debug("[extractColorFromThumbnail_prominentColor] Starting color extraction")
+
+	bounds := img.Bounds()
+	imgNRGBA := image.NewNRGBA(bounds)
+	draw.Draw(imgNRGBA, bounds, img, bounds.Min, draw.Src)
+
+	if imgNRGBA == nil {
+		log.WithFields(logrus.Fields{
+			"url": imageURL,
+		}).Error("[extractColorFromThumbnail_prominentColor] imgNRGBA is nil")
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+
+	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
+	if err != nil || len(colors) == 0 {
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color with background mask")
+		colors, err = prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, nil)
+		if err != nil || len(colors) == 0 {
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"error": err,
+			}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color without background mask")
+			cacheDefaultColor(imageURL)
+			return 128, 128, 128
+		}
+	}
+
+	if len(colors) > 0 {
+		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"color": extractedColor,
+		}).Debug("[extractColorFromThumbnail_prominentColor] Extracted color")
+		if err := cache.Set(cachePrefix, imageURL, extractedColor, 24*time.Hour); err != nil {
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"color": extractedColor,
+				"error": err,
+			}).Error("[extractColorFromThumbnail_prominentColor] Failed to cache color")
+		}
+		return extractedColor.R, extractedColor.G, extractedColor.B
+	}
+
+	// Cache the default color if extraction fails
+	cacheDefaultColor(imageURL)
+	return 128, 128, 128
+}
+
+/**
+ * @function cacheDefaultColor
+ * @description Caches the default color for a given image URL.
+ * @param {string} imageURL The URL of the image to cache the default color for.
+ * @dependencies cache, log
+ */
+func cacheDefaultColor(imageURL string) {
+	cachePrefix := thumbnailColorPrefix
+	defaultColor := RGBColor{defaultColor, defaultColor, defaultColor}
+
+	if err := cache.Set(cachePrefix, imageURL, defaultColor, cacheDuration); err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[cacheDefaultColor] Failed to cache default color")
+	}
+}
+
+/**
+ * @function DiscoverFavicon
+ * @description Discovers the favicon for a given page URL.
+ *              It sends an HTTP GET request to the page, parses the HTML response,
+ *              and searches for link elements with rel attributes containing "icon", "shortcut", or "apple-touch-icon".
+ * @param {string} pageURL The URL of the page to discover the favicon for.
+ * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ * @dependencies httpClient, html.Parse, findFavicon, url.Parse, log
+ */
+func DiscoverFavicon(pageURL string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error creating request")
+		return ""
+	}
+
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error fetching page")
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.WithFields(logrus.Fields{
+			"url":    pageURL,
+			"status": resp.Status,
+		}).Error("[DiscoverFavicon] Error fetching page")
+		return ""
+	}
+
+	doc, err := html.Parse(resp.Body)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error parsing HTML")
+		return ""
+	}
+
+	favicon := findFavicon(doc)
+
+	if favicon != "" && !strings.HasPrefix(favicon, "http") {
+		if parsedFaviconURL, err := url.Parse(favicon); err == nil {
+			if baseURL, err := url.Parse(pageURL); err == nil {
+				favicon = baseURL.ResolveReference(parsedFaviconURL).String()
+			}
+		}
+	}
+
+	return favicon
+}
+
+/**
+ * @function findFavicon
+ * @description Recursively searches an HTML node tree for a favicon link.
+ * @param {*html.Node} n The root node of the HTML tree to search.
+ * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ */
+func findFavicon(n *html.Node) string {
+	if n.Type == html.ElementNode && n.Data == "link" {
+		relAttr := ""
+		hrefAttr := ""
+		for _, attr := range n.Attr {
+			if attr.Key == "rel" {
+				relAttr = attr.Val
+			} else if attr.Key == "href" {
+				hrefAttr = attr.Val
+			}
+		}
+
+		relValues := strings.Fields(relAttr)
+		for _, relValue := range relValues {
+			if relValue == "icon" || relValue == "shortcut" || relValue == "apple-touch-icon" {
+				if hrefAttr != "" {
+					return hrefAttr
+				}
+			}
+		}
+	}
+
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if favicon := findFavicon(c); favicon != "" {
+			return favicon
+		}
+	}
+
+	return ""
+}
+
+/**
+ * @function DiscoverFaviconWithColly
+ * @description Discovers the favicon for a given page URL using colly.
+ * @param {*colly.Collector} c The colly collector to use for the request.
+ * @param {string} pageURL The URL of the page to discover the favicon for.
+ * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ * @dependencies colly.HTMLElement, c.OnHTML, c.Visit
+ */
+func DiscoverFaviconWithColly(c *colly.Collector, pageURL string) string {
+	var favicon string
+
+	c.OnHTML("link[rel]", func(e *colly.HTMLElement) {
+		rel := e.Attr("rel")
+		href := e.Attr("href")
+
+		relValues := strings.Fields(rel)
+		for _, relValue := range relValues {
+			if relValue == "icon" || relValue == "shortcut" || relValue == "apple-touch-icon" {
+				if href != "" {
+					favicon = e.Request.AbsoluteURL(href)
+					return
+				}
+			}
+		}
+	})
+
+	c.Visit(pageURL)
+
+	return favicon
 }
 
