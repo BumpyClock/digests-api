@@ -308,12 +308,12 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			log.Printf("Recovered from panic while processing URL %s: %v", imageURL, rec)
-			r, g, b = defaultColor, defaultColor, defaultColor
+			r, g, b = 128, 128, 128
 		}
 	}()
 
 	if imageURL == "" {
-		return defaultColor, defaultColor, defaultColor
+		return 128, 128, 128
 	}
 
 	cachePrefix := thumbnailColorPrefix
@@ -322,6 +322,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Attempt to retrieve the color from the cache
 	err := cache.Get(cachePrefix, imageURL, &cachedColor)
 	if err == nil {
+		log.Printf("[extractColorFromThumbnail_prominentColor] Found cached color for %s: %v", imageURL, cachedColor)
 		return cachedColor.R, cachedColor.G, cachedColor.B
 	}
 
@@ -330,40 +331,34 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
 		log.Printf("Invalid image URL %s", imageURL)
 		cacheDefaultColor(imageURL)
-		return defaultColor, defaultColor, defaultColor
+		return 128, 128, 128
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
 		log.Printf("Error creating request for prominentColor: %v", err)
 		cacheDefaultColor(imageURL)
-		return defaultColor, defaultColor, defaultColor
+		return 128, 128, 128
 	}
-	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Printf("Failed to download image %s: %v", imageURL, err)
 		cacheDefaultColor(imageURL)
-		return defaultColor, defaultColor, defaultColor
+		return 128, 128, 128
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Error downloading image %s: %s", imageURL, resp.Status)
-		cacheDefaultColor(imageURL)
-		return defaultColor, defaultColor, defaultColor
-	}
 
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
 		log.Printf("Failed to decode image %s: %v", imageURL, err)
 		cacheDefaultColor(imageURL)
-		return defaultColor, defaultColor, defaultColor
+		return 128, 128, 128
 	}
+	log.Printf("Starting color extraction for %s", imageURL)
 
 	bounds := img.Bounds()
 	imgNRGBA := image.NewNRGBA(bounds)
@@ -372,7 +367,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	if imgNRGBA == nil {
 		log.Printf("imgNRGBA is nil for URL %s", imageURL)
 		cacheDefaultColor(imageURL)
-		return defaultColor, defaultColor, defaultColor
+		return 128, 128, 128
 	}
 
 	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
@@ -382,13 +377,14 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 		if err != nil || len(colors) == 0 {
 			log.Printf("Error extracting prominent color without background mask for %s: %v", imageURL, err)
 			cacheDefaultColor(imageURL)
-			return defaultColor, defaultColor, defaultColor
+			return 128, 128, 128
 		}
 	}
 
 	if len(colors) > 0 {
 		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
-		if err := cache.Set(cachePrefix, imageURL, extractedColor, cacheDuration); err != nil {
+		log.Printf("Extracted color for %s: %v", imageURL, extractedColor)
+		if err := cache.Set(cachePrefix, imageURL, extractedColor, 24*time.Hour); err != nil {
 			log.Printf("Failed to cache color for %s: %v", imageURL, err)
 		}
 		return extractedColor.R, extractedColor.G, extractedColor.B
@@ -396,7 +392,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	// Cache the default color if extraction fails
 	cacheDefaultColor(imageURL)
-	return defaultColor, defaultColor, defaultColor
+	return 128, 128, 128
 }
 
 /**

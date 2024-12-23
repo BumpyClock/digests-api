@@ -373,6 +373,12 @@ func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 		item.ThumbnailColor = cachedColor
 		item.ThumbnailColorComputed = "set"
 		log.Printf("[updateThumbnailColorForItem] Updated color for %s: %v", item.Thumbnail, item.ThumbnailColor)
+	case item.ThumbnailColorComputed == "no":
+		if cachedColor != (RGBColor{}) {
+			item.ThumbnailColor = cachedColor
+			item.ThumbnailColorComputed = "set"
+			log.Printf("[updateThumbnailColorForItem] Updated color for %s: %v", item.Thumbnail, item.ThumbnailColor)
+		}
 	default:
 		// No additional logic
 	}

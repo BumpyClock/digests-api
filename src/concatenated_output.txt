@@ -1,0 +1,3162 @@
+//getreaderview.go
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"sync"
+	"time"
+
+	readability "github.com/go-shiori/go-readability"
+)
+
+func getReaderViewResult(url string) ReaderViewResult {
+	readerView, err := getReaderView(url)
+	if err != nil {
+		log.Errorf("[ReaderView] Error retrieving content for %s: %v", url, err)
+		return ReaderViewResult{
+			URL:    url,
+			Status: "error",
+			Error:  err,
+		}
+	}
+	return ReaderViewResult{
+		URL:         url,
+		Status:      "ok",
+		ReaderView:  readerView.Content,
+		Title:       readerView.Title,
+		SiteName:    readerView.SiteName,
+		Image:       readerView.Image,
+		Favicon:     readerView.Favicon,
+		TextContent: readerView.TextContent,
+	}
+}
+
+func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		log.Warnf("[ReaderView] Invalid method: %s", r.Method)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	var urls Urls
+	if err := json.NewDecoder(r.Body).Decode(&urls); err != nil {
+		log.Errorf("[ReaderView] Error decoding request body: %v", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	var wg sync.WaitGroup
+	results := make([]ReaderViewResult, len(urls.Urls))
+
+	for i, url := range urls.Urls {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+
+			cacheKey := createHash(url)
+			var result ReaderViewResult
+
+			if err := cache.Get(readerView_prefix, cacheKey, &result); err != nil {
+				log.Infof("[ReaderView] Cache miss for %s", url)
+				result = getReaderViewResult(url)
+				if len(result.TextContent) < 100 {
+					result.TextContent = `<div id="readability-page-1" class="page"><p id="cmsg">Error getting reader view or site requires subscription. Please open the link in a new tab.</p></div>`
+					result.ReaderView = result.TextContent
+				}
+				if err := cache.Set(readerView_prefix, cacheKey, result, 24*time.Hour); err != nil {
+					log.Errorf("[ReaderView] Failed to cache reader view for %s: %v", url, err)
+				}
+			} else {
+				log.Infof("[ReaderView] Cache hit for %s", url)
+			}
+			results[i] = result
+		}(i, url)
+	}
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(results); err != nil {
+		log.Errorf("[ReaderView] Failed to encode JSON: %v", err)
+	}
+}
+
+func getReaderView(url string) (readability.Article, error) {
+	article, err := readability.FromURL(url, 30*time.Second)
+	if err != nil {
+		log.Errorf("[ReaderView] Failed to parse %s: %v", url, err)
+		return readability.Article{}, err
+	}
+	return article, nil
+}
+
+//server.go
+package main
+
+import (
+	"compress/gzip"
+	"flag"
+	"net/http"
+	_ "net/http/pprof"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	digestsCache "digests-app-api/cache"
+
+	"github.com/rs/cors"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/time/rate"
+)
+
+var (
+	limiter       = rate.NewLimiter(5, 15) // e.g., 5 requests/sec, burst 15
+	cache         digestsCache.Cache
+	log           = logrus.New()
+	urlList       []string
+	urlListMutex  = &sync.Mutex{}
+	refresh_timer = 60
+	redis_address = "localhost:6379"
+	numWorkers    = runtime.NumCPU()
+	cacheMutex    = &sync.Mutex{}
+	httpClient    = &http.Client{Timeout: 20 * time.Second}
+	cachePeriod   = 30
+)
+
+func main() {
+	// Start pprof profiling in a goroutine
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
+	port := flag.String("port", "8000", "port to run the application on")
+	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
+	redis := flag.String("redis", "localhost:6379", "redis address")
+	flag.Parse()
+
+	mux := http.NewServeMux()
+	log.Infof("Number of workers: %v", numWorkers)
+
+	// Setup routes
+	InitializeRoutes(mux)
+
+	// Wrap mux with middlewares
+	var handler http.Handler = mux
+
+	// 1) Recover from panics
+	handler = errorRecoveryMiddleware(handler)
+
+	// 2) CORS
+	handler = cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodOptions, http.MethodPut, http.MethodDelete},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization"},
+		AllowCredentials: true,
+	}).Handler(handler)
+
+	// 3) Rate limit
+	handler = RateLimitMiddleware(handler)
+
+	// 4) GZIP compression
+	handler = GzipMiddleware(handler)
+
+	// Cache setup
+	redis_address = *redis
+	log.Info("Opening cache connection...")
+
+	redisCache, redisErr := digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
+	if redisErr != nil {
+		log.Warnf("Failed to open Redis cache (%v); falling back to in-memory cache", redisErr)
+		cache = digestsCache.NewGoCache(5*time.Minute, 10*time.Minute)
+	} else {
+		cache = redisCache
+	}
+
+	cachesize, cacheerr := cache.Count()
+	if cacheerr != nil {
+		log.Errorf("Failed to get cache size: %v", cacheerr)
+	} else {
+		log.Infof("Cache has %d items", cachesize)
+	}
+
+	// Set refresh timer from command-line
+	refresh_timer = *timer
+	refreshFeeds()
+
+	// Periodic refresh
+	go func() {
+		ticker := time.NewTicker(time.Duration(refresh_timer*4) * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			log.Info("Refreshing cache (periodic)...")
+			refreshFeeds()
+			log.Infof("Cache refreshed at %v, urlList=%v", time.Now().Format(time.RFC3339), urlList)
+		}
+	}()
+
+	log.Infof("Server is starting on port %v", *port)
+	log.Infof("Refresh timer is %v minutes", refresh_timer)
+	log.Infof("Redis address is %v", redis_address)
+
+	err := http.ListenAndServe(":"+*port, handler)
+	if err != nil {
+		log.Fatalf("Server failed to start: %v", err)
+	}
+}
+
+// errorRecoveryMiddleware ensures the server recovers from unexpected panics
+func errorRecoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Errorf("Panic recovered: %v", rec)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// GzipMiddleware adds gzip compression
+func GzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		wrw := gzipResponseWriter{ResponseWriter: w}
+		wrw.Header().Set("Content-Encoding", "gzip")
+		defer wrw.Flush()
+
+		next.ServeHTTP(&wrw, r)
+	})
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+	writer      *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.Header().Del("Content-Length")
+		w.writer = gzip.NewWriter(w.ResponseWriter)
+		w.wroteHeader = true
+	}
+	return w.writer.Write(b)
+}
+
+func (w *gzipResponseWriter) WriteHeader(status int) {
+	w.ResponseWriter.WriteHeader(status)
+	if w.wroteHeader && w.writer != nil {
+		w.writer.Close()
+	}
+}
+
+func (w *gzipResponseWriter) Flush() {
+	if w.wroteHeader {
+		_ = w.writer.Flush()
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// RateLimitMiddleware applies a rate limiter
+func RateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !limiter.Allow() {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+//sqliteCache.go
+package digestsCache
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	"github.com/sirupsen/logrus"
+)
+
+// SQLiteCache implements the Cache interface using a local SQLite database.
+type SQLiteCache struct {
+	db *sql.DB
+}
+
+var ErrSQLCacheMiss = errors.New("sqlite cache: key not found or expired")
+
+// NewSQLiteCache creates a new SQLiteCache instance and initializes the database schema.
+func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		logrus.WithField("dbPath", dbPath).Error("Failed to open SQLite database")
+		return nil, err
+	}
+
+	// Create the cache table if it doesn't exist
+	schema := `
+	CREATE TABLE IF NOT EXISTS cache (
+		id TEXT PRIMARY KEY,
+		data TEXT NOT NULL,
+		expiration INTEGER NOT NULL
+	);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		logrus.WithField("error", err).Error("Failed to create cache table in SQLite")
+		return nil, err
+	}
+
+	return &SQLiteCache{db: db}, nil
+}
+
+// Set inserts or updates a key in the SQLite database with an expiration time.
+// prefix:key is used as the primary key.
+func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
+	fullKey := prefix + ":" + key
+
+	valBytes, err := json.Marshal(value)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to marshal value for key (SQLite)")
+		return err
+	}
+
+	expirationUnix := time.Now().Add(expiration).Unix()
+	if expiration == 0 {
+		// If expiration is 0, set a large expiration in the distant future
+		expirationUnix = time.Now().AddDate(10, 0, 0).Unix()
+	}
+
+	stmt := `
+	INSERT INTO cache(id, data, expiration)
+	VALUES(?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		data=excluded.data,
+		expiration=excluded.expiration;
+	`
+
+	_, err = c.db.Exec(stmt, fullKey, valBytes, expirationUnix)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"key":   fullKey,
+			"error": err,
+		}).Error("Failed to set key in SQLite cache")
+		return err
+	}
+
+	return nil
+}
+
+// Get retrieves a key from the SQLite database and unmarshals it into dest.
+// If the key is expired or missing, it returns an error.
+func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
+	fullKey := prefix + ":" + key
+
+	stmt := `
+	SELECT data, expiration FROM cache
+	WHERE id = ?
+	LIMIT 1;
+	`
+
+	row := c.db.QueryRow(stmt, fullKey)
+
+	var (
+		data       []byte
+		expiration int64
+	)
+	err := row.Scan(&data, &expiration)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"key":   fullKey,
+			"error": err,
+		}).Error("Failed to read key from SQLite cache")
+		return ErrCacheMiss
+	}
+
+	// Check expiration
+	if time.Now().Unix() > expiration {
+		// Key is expired; remove it
+		deleteStmt := `DELETE FROM cache WHERE id = ?;`
+		_, _ = c.db.Exec(deleteStmt, fullKey)
+
+		logrus.WithFields(logrus.Fields{
+			"key": fullKey,
+		}).Info("Key expired in SQLite cache")
+		return ErrCacheMiss
+	}
+
+	// Unmarshal data into dest
+	if err := json.Unmarshal(data, dest); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"key": fullKey,
+		}).Error("Failed to unmarshal value from SQLite cache")
+		return err
+	}
+
+	return nil
+}
+
+// GetSubscribedListsFromCache scans the cache table for records that start with prefix:
+// and attempts to unmarshal them into a FeedItem to extract the FeedUrl.
+func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
+	var urls []string
+
+	stmt := `
+	SELECT id, data, expiration FROM cache
+	WHERE id LIKE ?;
+	`
+	rows, err := c.db.Query(stmt, prefix+":%")
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Failed to query SQLite cache for subscribed lists")
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			fullKey    string
+			data       []byte
+			expiration int64
+		)
+		if err := rows.Scan(&fullKey, &data, &expiration); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"error": err,
+			}).Error("Failed to scan SQLite cache row")
+			continue
+		}
+
+		// Check expiration
+		if time.Now().Unix() > expiration {
+			// Key is expired; remove it
+			deleteStmt := `DELETE FROM cache WHERE id = ?;`
+			_, _ = c.db.Exec(deleteStmt, fullKey)
+			continue
+		}
+
+		var feedItem FeedItem
+		if err := json.Unmarshal(data, &feedItem); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"key":   fullKey,
+				"error": err,
+			}).Error("Failed to unmarshal value from SQLite cache")
+			continue
+		}
+
+		if feedItem.FeedUrl != "" {
+			urls = append(urls, feedItem.FeedUrl)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Error iterating SQLite cache rows")
+		return nil, err
+	}
+
+	return urls, nil
+}
+
+// SetFeedItems fetches existing feed items from the cache, deduplicates them with newItems,
+// then updates the cache with the merged slice.
+func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
+	var existingItems []FeedItem
+	err := c.Get(prefix, key, &existingItems)
+	if err != nil && !errors.Is(err, ErrCacheMiss) && !errors.Is(err, ErrCacheMiss) {
+		return err
+	}
+
+	// Deduplicate
+	itemMap := make(map[string]FeedItem)
+	for _, item := range existingItems {
+		itemMap[item.GUID] = item
+	}
+	for _, newItem := range newItems {
+		itemMap[newItem.GUID] = newItem
+	}
+
+	uniqueItems := make([]FeedItem, 0, len(itemMap))
+	for _, item := range itemMap {
+		uniqueItems = append(uniqueItems, item)
+	}
+
+	return c.Set(prefix, key, uniqueItems, expiration)
+}
+
+// Count returns the total number of items in the cache (including expired items).
+func (c *SQLiteCache) Count() (int64, error) {
+	stmt := `SELECT COUNT(*) FROM cache;`
+	var count int64
+	err := c.db.QueryRow(stmt).Scan(&count)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Failed to count items in SQLite cache")
+		return 0, err
+	}
+	return count, nil
+}
+
+//redisCache.go
+package digestsCache
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"time"
+
+	"github.com/nitishm/go-rejson/v4"
+	"github.com/redis/go-redis/v9"
+	"github.com/sirupsen/logrus"
+)
+
+var ctx = context.Background()
+var log = logrus.New()
+
+type RedisCache struct {
+	client  *redis.Client
+	handler *rejson.Handler
+}
+
+type FeedItem struct {
+	GUID    string `json:"guid"`
+	FeedUrl string `json:"feedUrl"`
+	// Include other fields as necessary.
+}
+
+func NewRedisCache(addr string, password string, db int) (*RedisCache, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: password,
+		DB:       db,
+	})
+
+	_, err := client.Ping(context.Background()).Result()
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"address":  addr,
+			"database": db,
+		}).Error("Failed to connect to Redis")
+		return nil, err
+	}
+
+	handler := rejson.NewReJSONHandler()
+	handler.SetGoRedisClient(client)
+
+	return &RedisCache{client: client, handler: handler}, nil
+}
+
+func (cache *RedisCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
+	_, err := cache.handler.JSONSet(prefix+":"+key, ".", value)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to set key in Redis")
+		return err
+	}
+
+	if expiration != 0 {
+		err = cache.client.Expire(ctx, prefix+":"+key, expiration).Err()
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"key": key,
+			}).Error("Failed to set expiration for key in Redis")
+		}
+	}
+
+	return err
+}
+
+func (cache *RedisCache) Get(prefix string, key string, dest interface{}) error {
+	val, err := cache.handler.JSONGet(prefix+":"+key, ".")
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to get key from Redis")
+		return err
+	}
+
+	// Convert val to []byte, then to string
+	valStr := string(val.([]byte))
+
+	err = json.Unmarshal([]byte(valStr), dest)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to unmarshal value for key from Redis")
+	}
+
+	return err
+}
+
+func (cache *RedisCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
+	ctx := context.Background()                               // Create a new context
+	keys, err := cache.client.Keys(ctx, prefix+":*").Result() // Pass the context to the Keys method
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Failed to get keys from Redis")
+		return nil, err
+	}
+
+	var urls []string
+	for _, key := range keys {
+		var feedItem FeedItem
+		actualKey := strings.TrimPrefix(key, prefix+":") // Remove the prefix from the key
+		err := cache.Get(prefix, actualKey, &feedItem)
+		if err != nil {
+			log.WithFields(logrus.Fields{
+				"key":   actualKey,
+				"error": err,
+			}).Error("Failed to get value from Redis")
+			continue
+		}
+
+		if feedItem.FeedUrl != "" {
+			urls = append(urls, feedItem.FeedUrl)
+		}
+	}
+
+	return urls, nil
+}
+
+func (cache *RedisCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
+	// Fetch existing items from cache
+	var existingItems []FeedItem
+	err := cache.Get(prefix, key, &existingItems)
+	if err != nil && err != redis.Nil {
+		return err
+	}
+
+	// Deduplication based on GUID
+	itemMap := make(map[string]FeedItem)
+	for _, item := range existingItems {
+		itemMap[item.GUID] = item
+	}
+	for _, newItem := range newItems {
+		itemMap[newItem.GUID] = newItem // This will replace existing items with the same GUID or add new ones
+	}
+
+	// Convert map back to slice
+	uniqueItems := make([]FeedItem, 0, len(itemMap))
+	for _, item := range itemMap {
+		uniqueItems = append(uniqueItems, item)
+	}
+
+	// Cache the deduplicated slice of items
+	return cache.Set(prefix, key, uniqueItems, expiration)
+}
+
+func (cache *RedisCache) Count() (int64, error) {
+	return cache.client.DBSize(ctx).Result()
+}
+
+//goCache.go
+package digestsCache
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/patrickmn/go-cache"
+	"github.com/sirupsen/logrus"
+)
+
+type GoCache struct {
+	cache *cache.Cache
+}
+
+var ErrCacheMiss = errors.New("cache: key not found")
+
+func NewGoCache(defaultExpiration, cleanupInterval time.Duration) *GoCache {
+	c := cache.New(defaultExpiration, cleanupInterval)
+	return &GoCache{cache: c}
+}
+
+func (c *GoCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
+	fullKey := prefix + ":" + key
+	valBytes, err := json.Marshal(value)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to marshal value for key")
+		return err
+	}
+	c.cache.Set(fullKey, valBytes, expiration)
+	return nil
+}
+
+func (c *GoCache) Get(prefix string, key string, dest interface{}) error {
+	fullKey := prefix + ":" + key
+	val, found := c.cache.Get(fullKey)
+	if !found {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Info("Key not found in cache")
+		return ErrCacheMiss
+	}
+
+	valBytes, ok := val.([]byte)
+	if !ok {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to assert type of cached value")
+		return ErrCacheMiss // Or define a more appropriate error
+	}
+
+	err := json.Unmarshal(valBytes, dest)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key": key,
+		}).Error("Failed to unmarshal cached value")
+		return err
+	}
+
+	return nil
+}
+
+func (c *GoCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
+	var urls []string
+	for k, v := range c.cache.Items() {
+		if strings.HasPrefix(k, prefix+":") {
+			var feedItem FeedItem
+			err := json.Unmarshal(v.Object.([]byte), &feedItem)
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					"key":   k,
+					"error": err,
+				}).Error("Failed to unmarshal value from cache")
+				continue
+			}
+
+			if feedItem.FeedUrl != "" {
+				urls = append(urls, feedItem.FeedUrl)
+			}
+		}
+	}
+	return urls, nil
+}
+
+func (c *GoCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
+	var existingItems []FeedItem
+	err := c.Get(prefix, key, &existingItems)
+	if err != nil && err != ErrCacheMiss {
+		return err
+	}
+
+	itemMap := make(map[string]FeedItem)
+	for _, item := range existingItems {
+		itemMap[item.GUID] = item
+	}
+	for _, newItem := range newItems {
+		itemMap[newItem.GUID] = newItem
+	}
+
+	uniqueItems := make([]FeedItem, 0, len(itemMap))
+	for _, item := range itemMap {
+		uniqueItems = append(uniqueItems, item)
+	}
+
+	return c.Set(prefix, key, uniqueItems, expiration)
+}
+
+func (c *GoCache) Count() (int64, error) {
+	return int64(c.cache.ItemCount()), nil
+}
+
+//cacheInterface.go
+package digestsCache
+
+import "time"
+
+// Cache is the interface that defines the methods for a cache implementation.
+type Cache interface {
+	Set(prefix string, key string, value interface{}, expiration time.Duration) error
+	Get(prefix string, key string, dest interface{}) error
+	GetSubscribedListsFromCache(prefix string) ([]string, error)
+	SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error
+	Count() (int64, error)
+}
+
+//dataModel.go
+package main
+
+import (
+	"github.com/mmcdole/gofeed"
+)
+
+// ParseRequest represents the expected incoming JSON payload structure.
+// ParseRequest represents the expected JSON body for the /parse endpoint.
+type ParseRequest struct {
+	URLs         []string `json:"urls"`
+	Page         int      `json:"page"`
+	ItemsPerPage int      `json:"itemsperpage"`
+}
+
+type RGBColor struct {
+	R uint8 `json:"r"`
+	G uint8 `json:"g"`
+	B uint8 `json:"b"`
+}
+
+// Add these structs to your existing code
+type MediaContent struct {
+	URL    string `xml:"url,attr"`
+	Width  int    `xml:"width,attr"`
+	Height int    `xml:"height,attr"`
+}
+
+type ExtendedItem struct {
+	*gofeed.Item
+	MediaContent []MediaContent `xml:"http://search.yahoo.com/mrss/ content"`
+}
+
+// FeedResponseItem represents an enriched structure for an individual feed item.
+type FeedResponseItem struct {
+	Type                   string                      `json:"type"`
+	ID                     string                      `json:"id"`
+	Title                  string                      `json:"title"`
+	Description            string                      `json:"description"`
+	Link                   string                      `json:"link"`
+	Author                 string                      `json:"author"`
+	Published              string                      `json:"published"`
+	Content                string                      `json:"content"`
+	Created                string                      `json:"created"`
+	Content_Encoded        string                      `json:"content_encoded"`
+	Categories             string                      `json:"categories"`
+	Enclosures             []*gofeed.Enclosure         `json:"enclosures"`
+	Thumbnail              string                      `json:"thumbnail"`
+	ThumbnailColor         RGBColor                    `json:"thumbnailColor"`
+	ThumbnailColorComputed string                      `json:"thumbnailColorComputed"`
+	EpisodeType            string                      `json:"episodeType,omitempty"`
+	Subtitle               []PodcastTranscriptsDetails `json:"subtitle,omitempty"`
+	Duration               int                         `json:"duration,omitempty"`
+}
+
+// FeedResponse represents the structure for the overall feed, including metadata and items.
+type FeedResponse struct {
+	Type          string              `json:"type"`
+	GUID          string              `json:"guid"`
+	Status        string              `json:"status"`
+	Error         error               `json:"error,omitempty"`
+	SiteTitle     string              `json:"siteTitle"`
+	FeedTitle     string              `json:"feedTitle"`
+	FeedUrl       string              `json:"feedUrl"`
+	Description   string              `json:"description"`
+	Link          string              `json:"link"`
+	LastUpdated   string              `json:"lastUpdated"`
+	LastRefreshed string              `json:"lastRefreshed"`
+	Published     string              `json:"published"`
+	Author        *gofeed.Person      `json:"author"`
+	Language      string              `json:"language"`
+	Favicon       string              `json:"favicon"`
+	SiteImage     string              `json:"siteImage,omitempty"`
+	Categories    string              `json:"categories"`
+	Items         *[]FeedResponseItem `json:"items,omitempty"`
+}
+
+type Feeds struct {
+	Feeds []FeedResponse `json:"feeds"`
+}
+
+type ReaderViewResult struct {
+	URL         string `json:"url"`
+	Status      string `json:"status"`
+	ReaderView  string `json:"content"`
+	Error       error  `json:"error,omitempty"`
+	Title       string `json:"title"`
+	SiteName    string `json:"siteName"`
+	Image       string `json:"image"`
+	Favicon     string `json:"favicon"`
+	TextContent string `json:"textContent"`
+}
+
+type FeedSearchAPIResponseItem struct {
+	Bozo           int      `json:"bozo"`
+	Content_length int      `json:"content_length"`
+	Content_type   string   `json:"content_type"`
+	Description    string   `json:"description"`
+	Favicon        string   `json:"favicon"`
+	Hubs           []string `json:"hubs"`
+	Is_Podcast     bool     `json:"is_podcast"`
+	Is_Push        bool     `json:"is_push"`
+	Item_Count     int      `json:"item_count"`
+	Last_Seen      string   `json:"last_seen"`
+	Last_Updated   string   `json:"last_updated"`
+	Score          float64  `json:"score"`
+	Site_name      string   `json:"site_name"`
+	Site_url       string   `json:"site_url"`
+	Title          string   `json:"title"`
+	Url            string   `json:"url"`
+	Velocity       float64  `json:"velocity"`
+	Version        string   `json:"version"`
+	Self_Url       string   `json:"self_url"`
+}
+
+type FeedSearchResponseItem struct {
+	Title        string  `json:"title"`
+	Url          string  `json:"url"`
+	Site_name    string  `json:"site_name"`
+	Site_url     string  `json:"site_url"`
+	Description  string  `json:"description"`
+	Favicon      string  `json:"favicon"`
+	Is_Podcast   bool    `json:"is_podcast"`
+	Is_Push      bool    `json:"is_push"`
+	Item_Count   int     `json:"item_count"`
+	Last_Seen    string  `json:"last_seen"`
+	Last_Updated string  `json:"last_updated"`
+	Score        float64 `json:"score"`
+}
+
+type PodcastSearchResponseItem struct {
+	Title             string   `json:"title"`
+	Url               string   `json:"url"`
+	Author            string   `json:"author"`
+	Description       string   `json:"description"`
+	FeedImage         string   `json:"feedImage"`
+	Image             string   `json:"image"`
+	Artwork           string   `json:"artwork"`
+	Categories        []string `json:"categories"`
+	PodcastGUID       string   `json:"podcastGuid"`
+	EpisodeCount      int      `json:"episodeCount"`
+	NewestItemPubdate float32  `json:"newestItemPubdate"`
+}
+
+type PodcastAPIResponseItem struct {
+	Id                     int                         `json:"id"`
+	Title                  string                      `json:"title"`
+	Url                    string                      `json:"url"`
+	OriginalUrl            string                      `json:"originalUrl"`
+	Link                   string                      `json:"link"`
+	Description            string                      `json:"description"`
+	Author                 string                      `json:"author"`
+	Language               string                      `json:"language"`
+	OwnerName              string                      `json:"ownerName"`
+	Image                  string                      `json:"image"`
+	Artwork                string                      `json:"artwork"`
+	FeedImage              string                      `json:"feedImage"`
+	FeedID                 string                      `json:"feedId"`
+	PodcastGUID            string                      `json:"podcastGuid"`
+	LastUpdatedTime        string                      `json:"lastUpdatedTime"`
+	LastCrawlTime          int                         `json:"lastCrawlTime"`
+	LastParseTime          int                         `json:"lastParseTime"`
+	InPollingQueue         int                         `json:"inPollingQueue"`
+	Priority               int                         `json:"priority"`
+	LastGoodHttpStatusTime int                         `json:"lastGoodHttpStatusTime"`
+	LastHttpStatus         int                         `json:"lastHttpStatus"`
+	ContentType            string                      `json:"contentType"`
+	ItunedId               int                         `json:"itunedId"`
+	Generator              string                      `json:"generator"`
+	Dead                   int                         `json:"dead"`
+	CrawlErrors            int                         `json:"crawlErrors"`
+	ParseErrors            int                         `json:"parseErrors"`
+	Categories             []string                    `json:"podCast_Categories"`
+	Locked                 int                         `json:"locked"`
+	Medium                 string                      `json:"medium"`
+	EpisodeCount           int                         `json:"episodeCount"`
+	ImageUrlHash           float64                     `json:"imageUrlHash"`
+	NewestItemPubdate      float32                     `json:"newestItemPubdate"`
+	Transcripts            []PodcastTranscriptsDetails `json:"transcripts"`
+}
+
+type PodcastTranscriptsDetails struct {
+	Url  string                 `json:"url"`
+	Type PodcastTranscriptsType `json:"type"`
+}
+
+type PodcastTranscriptsType string
+
+// Define constants of the custom type
+const (
+	TextHTML       PodcastTranscriptsType = "text/html"
+	ApplicationSRT PodcastTranscriptsType = "application/srt"
+	ApplicationVTT PodcastTranscriptsType = "application/vtt"
+)
+
+type PodcastSearchAPIResponse struct {
+	Items       []PodcastAPIResponseItem `json:"feeds"`
+	Status      string                   `json:"status"`
+	Count       int                      `json:"count"`
+	Query       string                   `json:"query"`
+	Description string                   `json:"description"`
+}
+
+type TTSRequest struct {
+	Text         string `json:"text"`
+	LanguageCode string `json:"languageCode"`
+	SsmlGender   string `json:"ssmlGender"`
+	VoiceName    string `json:"voiceName"`
+	Url          string `json:"url"`
+}
+
+// MetaData Items
+type MetaDataResponseItem struct {
+	Title       string      `json:"title"`
+	Description string      `json:"description"`
+	Images      []WebMedia  `json:"images"`
+	Type        string      `json:"type"`
+	Sitename    string      `json:"sitename"`
+	Favicon     string      `json:"favicon"`
+	Duration    int         `json:"duration"`
+	Domain      string      `json:"domain"`
+	URL         string      `json:"url"`
+	Videos      []WebMedia  `json:"videos"`
+	Locale      string      `json:"locale,omitempty"`
+	Determiner  string      `json:"determiner,omitempty"`
+	Raw         interface{} `json:"raw,omitempty"`
+	ThemeColor  string      `json:"themeColor,omitempty"`
+}
+
+// WebMedia captures info about images/videos, including optional metadata.
+type WebMedia struct {
+	URL         string   `json:"url"`
+	Alt         string   `json:"alt,omitempty"`
+	Type        string   `json:"type,omitempty"`
+	Width       int      `json:"width,omitempty"`
+	Height      int      `json:"height,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	SecureURL   string   `json:"secure_url,omitempty"`
+	Duration    int      `json:"duration,omitempty"`
+	ReleaseDate string   `json:"release_date,omitempty"`
+}
+
+// CONSTANTS
+
+const redis_password = ""
+const redis_db = 0
+const feed_prefix = "feed:"
+const metaData_prefix = "metaData:"
+const readerView_prefix = "readerViewContent:"
+const feedsearch_prefix = "feedsearch:"
+const thumbnailColor_prefix = "thumbnailColor:"
+
+const audio_prefix = "tts:"
+
+const DefaultRed = uint8(128)
+const DefaultGreen = uint8(128)
+const DefaultBlue = uint8(128)
+
+// const thumbnailColorPrefix = "thumbnailColor_"
+
+// var colorComputeSemaphore = make(chan struct{}, numWorkers)
+
+// const redis_feedsItems_key = "feedsItems"
+// const redis_feedDetails_key = "feedDetails"
+
+//discover.go
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+
+	"github.com/PuerkitoBio/goquery"
+)
+
+type Urls struct {
+	Urls []string `json:"urls"`
+}
+
+var (
+	feedResultPool = &sync.Pool{
+		New: func() interface{} {
+			return &FeedResult{}
+		},
+	}
+)
+
+func discoverHandler(w http.ResponseWriter, r *http.Request) {
+	var urls Urls
+	err := json.NewDecoder(r.Body).Decode(&urls)
+	if err != nil {
+		log.Printf("Error decoding request body: %v", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	var wg sync.WaitGroup
+	results := make([]FeedResult, len(urls.Urls))
+	for i, url := range urls.Urls {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			feedLink, err := discoverRssFeedUrl(url)
+			result := feedResultPool.Get().(*FeedResult)
+			defer feedResultPool.Put(result)
+			if err != nil {
+				result.URL = url
+				result.Status = "error"
+				result.Error = err.Error()
+				result.FeedLink = ""
+			} else {
+				result.URL = url
+				result.Status = "ok"
+				result.FeedLink = feedLink
+			}
+			results[i] = *result
+		}(i, url)
+	}
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string][]FeedResult{"feeds": results})
+}
+
+type FeedResult struct {
+	URL      string `json:"url"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+	FeedLink string `json:"feedLink"`
+}
+
+func discoverRssFeedUrl(urlStr string) (string, error) {
+	if strings.HasPrefix(urlStr, "https://github.com") {
+		return generateGitHubRssUrl(urlStr), nil
+	}
+
+	if strings.HasPrefix(urlStr, "https://www.reddit.com") {
+		return generateRedditRssUrl(urlStr), nil
+	}
+
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	rssLink, exists := doc.Find(`link[type="application/rss+xml"]`).Attr("href")
+	if !exists {
+		return "", errors.New("RSS feed not found")
+	}
+
+	rssLink, err = ensureAbsoluteUrl(urlStr, rssLink)
+	if err != nil {
+		return "", err
+	}
+
+	return rssLink, nil
+}
+
+func generateGitHubRssUrl(url string) string {
+	return strings.TrimRight(url, "/") + "/commits/master.atom"
+}
+
+func generateRedditRssUrl(url string) string {
+	return strings.TrimRight(url, "/") + "/.rss"
+}
+
+func ensureAbsoluteUrl(baseUrl, relativeOrAbsoluteUrl string) (string, error) {
+	u, err := url.Parse(relativeOrAbsoluteUrl)
+	if err != nil || !u.IsAbs() {
+		u, err = url.Parse(baseUrl)
+		if err != nil {
+			return "", err
+		}
+		rel, err := url.Parse(relativeOrAbsoluteUrl)
+		if err != nil {
+			return "", err
+		}
+		return u.ResolveReference(rel).String(), nil
+	}
+	return relativeOrAbsoluteUrl, nil
+}
+
+//search.go
+package main
+
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+	"time"
+)
+
+// createRSSSearchResponse converts an array of FeedSearchAPIResponseItem to an array of FeedSearchResponseItem
+func createRSSSearchResponse(apiResults []FeedSearchAPIResponseItem) []FeedSearchResponseItem {
+	var responseItems []FeedSearchResponseItem
+	for _, item := range apiResults {
+		responseItem := FeedSearchResponseItem{
+			Title:        item.Title,
+			Url:          item.Url,
+			Site_name:    item.Site_name,
+			Site_url:     item.Site_url,
+			Description:  item.Description,
+			Favicon:      item.Favicon,
+			Is_Podcast:   item.Is_Podcast,
+			Is_Push:      item.Is_Push,
+			Item_Count:   item.Item_Count,
+			Last_Seen:    item.Last_Seen,
+			Last_Updated: item.Last_Updated,
+			Score:        item.Score,
+		}
+		responseItems = append(responseItems, responseItem)
+	}
+	return responseItems
+}
+
+func createPodcastSearchResponse(apiResults []PodcastAPIResponseItem) []PodcastSearchResponseItem {
+	var responseItems []PodcastSearchResponseItem
+	for _, item := range apiResults {
+		responseItem := PodcastSearchResponseItem{
+			Title:             item.Title,
+			Url:               item.Url,
+			Author:            item.Author,
+			Description:       item.Description,
+			FeedImage:         item.Image,
+			Image:             item.Image,
+			Artwork:           item.Artwork,
+			Categories:        item.Categories,
+			PodcastGUID:       item.PodcastGUID,
+			EpisodeCount:      item.EpisodeCount,
+			NewestItemPubdate: item.NewestItemPubdate,
+		}
+		responseItems = append(responseItems, responseItem)
+	}
+	return responseItems
+}
+
+func searchRSS(queryURL string) []FeedSearchResponseItem {
+
+	log.Println("Search request received for URL: ", queryURL)
+	queryURLCacheKey := createHash(queryURL)
+
+	// Check the cache if the URL has been searched before
+	var cachedResults []FeedSearchResponseItem
+	if err := cache.Get(feedsearch_prefix, queryURLCacheKey, &cachedResults); err == nil {
+		log.Println("Cache hit for URL: ", queryURL)
+		return cachedResults
+	} else {
+		log.Println("Cache miss for URL: ", queryURL)
+	}
+
+	// Construct the external API URL
+	apiURL := "https://feedsearch.dev/api/v1/search?url=" + url.QueryEscape(queryURL)
+
+	// Make the request to the external API
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		log.Println("Error making request to external API: ", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Read the response from the external API
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Println("Error reading response from external API: ", err)
+		return nil
+	}
+
+	// Unmarshal the JSON response into the FeedSearchAPIResponseItem structure
+	var searchResults []FeedSearchAPIResponseItem
+	err = json.Unmarshal(body, &searchResults)
+	if err != nil {
+		log.Println("Error unmarshalling response from external API: ", err)
+		return nil
+	}
+
+	// Convert the API response to the desired response format
+	responseItems := createRSSSearchResponse(searchResults)
+
+	// Cache the search results
+	if err := cache.Set(feedsearch_prefix, queryURLCacheKey, responseItems, 24*time.Hour); err != nil {
+		log.Printf("Failed to cache search results for URL %s: %v", queryURL, err)
+	} else {
+		log.Printf("Successfully cached search results for URL %s", queryURL)
+	}
+
+	return responseItems
+}
+func calculateAuth(key, secret, datestr string) string {
+
+	h := sha1.New()
+	h.Write([]byte(key + secret + datestr))
+
+	log.Println("Hash Calculated as: ", h)
+	return hex.EncodeToString(h.Sum(nil))
+}
+func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
+	log.Println("Search request received for Podcast with query: ", query)
+	key := os.Getenv("PODCAST_INDEX_API_KEY")
+	secret := os.Getenv("PODCAST_INDEX_API_SECRET")
+	baseURL := "https://api.podcastindex.org/api/1.0/"
+	apiURL := baseURL + "search/byterm?q=" + url.QueryEscape(query)
+
+	log.Println("API URL: ", apiURL)
+	log.Println("API Key: ", key)
+	log.Println("API Secret: ", secret)
+	log.Println("Request Headers: ", apiURL)
+
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		log.Println("Error creating request: ", err)
+		return nil
+	}
+	now := strconv.FormatInt(time.Now().Unix(), 10)
+	authorization := calculateAuth(key, secret, now)
+	log.Println("Authorization: ", authorization)
+	log.Println("Date: ", now)
+	log.Println("User-Agent: MyPodcastApp")
+
+	req.Header.Set("User-Agent", "MyPodcastApp")
+	req.Header.Set("X-Auth-Key", key)
+	req.Header.Set("X-Auth-Date", now)
+	req.Header.Set("Authorization", authorization)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println("Error making request to Podcast Index API: ", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Println("Error reading response from Podcast Index API: ", err)
+		return nil
+	}
+
+	var searchResults PodcastSearchAPIResponse
+	err = json.Unmarshal(body, &searchResults)
+	if err != nil {
+		log.Println("API Response: ", resp.Body)
+		log.Println("Error unmarshalling response from Podcast Index API: ", err)
+		return nil
+	}
+
+	responseItems := createPodcastSearchResponse(searchResults.Items)
+	return responseItems
+}
+
+// searchHandler handles the /search endpoint
+func searchHandler(w http.ResponseWriter, r *http.Request) {
+	// Get the 'url' query parameter
+	searchType := r.URL.Query().Get("type")
+	if searchType == "rss" {
+		queryURL := r.URL.Query().Get("q")
+		if queryURL == "" {
+			http.Error(w, "No url provided", http.StatusBadRequest)
+			response := map[string]string{
+				"status": "error",
+				"error":  "No url provided",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		} else {
+			var searchResults []FeedSearchResponseItem = searchRSS(queryURL)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(searchResults)
+			return
+
+		}
+
+	} else if searchType == "podcast" {
+		query := r.URL.Query().Get("q")
+		if query == "" {
+			http.Error(w, "No query provided", http.StatusBadRequest)
+			response := map[string]string{
+				"status": "error",
+				"error":  "No query provided",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		} else {
+			var searchResults []PodcastSearchResponseItem = searchPodcast(r, query)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(searchResults)
+			return
+		}
+
+	} else {
+		http.Error(w, "No or invalid type provided", http.StatusBadRequest)
+		response := map[string]string{
+			"status": "error",
+			"error":  "No or invalid type provided",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+}
+
+//share.go
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"math/rand"
+)
+
+//createShareHandler handles the /create endpoint
+
+type createShareRequest struct {
+	Urls []string `json:"urls"`
+}
+
+type fetchShareRequest struct {
+	Key string `json:"key"`
+}
+
+func createShareHandler(w http.ResponseWriter, r *http.Request) {
+	var req createShareRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		log.Error("Error decoding request body: ", err)
+		return
+	}
+
+	if len(req.Urls) == 0 {
+		http.Error(w, "No URLs provided", http.StatusBadRequest)
+		response := map[string]string{
+			"status": "error",
+			"error":  "No URLs provided",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	log.Info("Create request received for URLs: ", req.Urls)
+
+	// Generate a random key of maximum 6 characters
+	rand.Seed(time.Now().UnixNano())
+	chars := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	randomKey := make([]rune, 6)
+	for i := range randomKey {
+		randomKey[i] = chars[rand.Intn(len(chars))]
+	}
+
+	cacheKey := "share:" + string(randomKey)
+
+	// Save the URLs to the cache
+	err = cache.Set(cacheKey, "urls", req.Urls, 0) // setting exp 0 to keep it forever
+	if err != nil {
+		http.Error(w, "Failed to save shared URLs", http.StatusInternalServerError)
+		return
+	}
+
+	// Respond with the link
+	response := map[string]string{"status": "ok", "link": "https://www.digests.app/share/" + string(randomKey)}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func shareHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info("Share request received")
+
+	// Decode the request body
+	var req fetchShareRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		log.Error("Error decoding request body: ", err)
+		return
+	}
+
+	// Get the key from the request body
+	cacheKey := "share:" + req.Key
+
+	// Get the URLs from the cache
+	var urls []string
+	err = cache.Get(cacheKey, "urls", &urls)
+	if err != nil {
+		http.Error(w, "Invalid share link", http.StatusBadRequest)
+		log.Error("Error getting URLs from cache: ", err)
+		return
+	}
+
+	// Respond with the URLs
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(urls)
+
+	log.Info("Share request received for key: ", req.Key)
+	log.Info("Returning URLs: ", urls)
+}
+
+//utils.go
+// utils.go
+
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"sync"
+)
+
+// validateURLsHandler handles the /validate endpoint
+func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req URLValidationRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var wg sync.WaitGroup
+	statuses := make([]URLStatus, len(req.URLs))
+	for i, url := range req.URLs {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			resp, err := http.Get(url)
+			if resp != nil {
+				defer resp.Body.Close()
+			}
+			status := "ok"
+			if err != nil || resp.StatusCode != http.StatusOK {
+				status = "error"
+				if err == nil {
+					status = http.StatusText(resp.StatusCode)
+				}
+			}
+			statuses[i] = URLStatus{URL: url, Status: status}
+		}(i, url)
+	}
+
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	err = json.NewEncoder(w).Encode(statuses)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// URLValidationRequest represents the request format for URL validation
+type URLValidationRequest struct {
+	URLs []string `json:"urls"`
+}
+
+// URLStatus represents the status of a single URL validation
+type URLStatus struct {
+	URL    string `json:"url"`
+	Status string `json:"status"`
+}
+
+//ImageUtils.go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/draw"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/net/html"
+
+	"github.com/EdlinOrg/prominentcolor"
+	"github.com/PuerkitoBio/goquery"
+	"github.com/gocolly/colly"
+	"github.com/mmcdole/gofeed"
+)
+
+const (
+	thumbnailColorPrefix = thumbnailColor_prefix
+	httpTimeout          = 10 * time.Second
+	cacheDuration        = 24 * time.Hour
+	defaultColor         = 128
+	userAgent            = "Mozilla/5.0 (compatible; FeedParser/1.0)"
+	collyUserAgent       = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+)
+
+type ThumbnailFinder struct {
+	cache sync.Map
+}
+
+func NewThumbnailFinder() *ThumbnailFinder {
+	return &ThumbnailFinder{}
+}
+
+// GetMetaData fetches a web page (targetURL) using Colly, extracting Open Graph tags
+// and JSON-LD data to produce a MetaDataResponseItem. It also attempts to discover
+// the favicon and domain if not provided by OG or JSON-LD.
+/*
+ * Inputs:
+ *   targetURL (string): The URL to visit and parse.
+ *
+ * Outputs:
+ *   (MetaDataResponseItem, error): On success, returns a struct with combined
+ *   metadata from both OG tags and JSON-LD. Returns an error if the fetch or parse fails.
+ */
+func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
+	// Basic validation
+	if targetURL == "" || targetURL == "http://" || targetURL == "://" || targetURL == "about:blank" {
+		return MetaDataResponseItem{}, fmt.Errorf("URL is empty or invalid")
+	}
+
+	// Prepare the collector with a friendly user agent that tricks sites
+	c := colly.NewCollector(
+		colly.UserAgent(collyUserAgent),
+	)
+
+	// Our enriched metadata struct
+	metaData := MetaDataResponseItem{
+		Images: []WebMedia{},
+		Videos: []WebMedia{},
+	}
+
+	// STEP 1: OnHTML("meta", ...) to capture Open Graph fields.
+	c.OnHTML("meta", func(e *colly.HTMLElement) {
+		property := e.Attr("property")
+		content := e.Attr("content")
+		name := e.Attr("name")
+		if (property == "" && name == "") || content == "" {
+			return
+		}
+
+		// Check for og: fields
+		parts := strings.Split(property, ":")
+		if len(parts) < 2 || parts[0] != "og" {
+			// Check for theme-color
+			if name == "theme-color" {
+				metaData.ThemeColor = content
+			}
+			return
+		}
+
+		switch property {
+		case "og:title":
+			metaData.Title = content
+		case "og:description":
+			metaData.Description = content
+		case "og:site_name":
+			metaData.Sitename = content
+		case "og:url":
+			metaData.URL = content
+		case "og:type":
+			metaData.Type = content
+		case "og:locale":
+			metaData.Locale = content
+		case "og:determiner":
+			metaData.Determiner = content
+
+		// Images
+		case "og:image":
+			metaData.Images = append(metaData.Images, WebMedia{URL: content})
+		case "og:image:width", "og:image:height", "og:image:alt", "og:image:type", "og:image:secure_url":
+			if len(metaData.Images) > 0 {
+				idx := len(metaData.Images) - 1
+				switch property {
+				case "og:image:width":
+					if w, err := strconv.Atoi(content); err == nil {
+						metaData.Images[idx].Width = w
+					}
+				case "og:image:height":
+					if h, err := strconv.Atoi(content); err == nil {
+						metaData.Images[idx].Height = h
+					}
+				case "og:image:alt":
+					metaData.Images[idx].Alt = content
+				case "og:image:type":
+					metaData.Images[idx].Type = content
+				case "og:image:secure_url":
+					metaData.Images[idx].SecureURL = content
+				}
+			}
+
+		// Videos
+		case "og:video:url":
+			metaData.Videos = append(metaData.Videos, WebMedia{URL: content})
+		case "og:video:width", "og:video:height", "og:video:type", "og:video:secure_url", "og:video:duration", "og:video:release_date", "og:video:tag":
+			if len(metaData.Videos) > 0 {
+				idx := len(metaData.Videos) - 1
+				switch property {
+				case "og:video:width":
+					if w, err := strconv.Atoi(content); err == nil {
+						metaData.Videos[idx].Width = w
+					}
+				case "og:video:height":
+					if h, err := strconv.Atoi(content); err == nil {
+						metaData.Videos[idx].Height = h
+					}
+				case "og:video:type":
+					metaData.Videos[idx].Type = content
+				case "og:video:secure_url":
+					metaData.Videos[idx].SecureURL = content
+				case "og:video:duration":
+					if d, err := strconv.Atoi(content); err == nil {
+						metaData.Videos[idx].Duration = d
+					}
+				case "og:video:release_date":
+					metaData.Videos[idx].ReleaseDate = content
+				case "og:video:tag":
+					tags := strings.Split(content, ",")
+					for _, t := range tags {
+						metaData.Videos[idx].Tags = append(metaData.Videos[idx].Tags, strings.TrimSpace(t))
+					}
+				}
+			}
+		}
+	})
+
+	// STEP 2: OnHTML("script[type='application/ld+json']", ...) to parse JSON-LD.
+	c.OnHTML("script[type='application/ld+json']", func(e *colly.HTMLElement) {
+		rawJSON := e.Text
+		// Attempt to parse the JSON-LD
+		var ldData interface{}
+		if err := json.Unmarshal([]byte(rawJSON), &ldData); err == nil {
+			// If we have no JSONLD in metaData, store this entire ldData.
+			// If you want to further parse Title, etc., you can do so here.
+			metaData.Raw = ldData
+			// Optionally, you can write logic to unify some fields from ld+json
+			// with your metaData if you want to override or fill in missing values.
+		}
+	})
+
+	// STEP 3: Attempt domain detection on request
+	c.OnRequest(func(r *colly.Request) {
+		if metaData.Domain == "" {
+			if parsedURL, err := url.Parse(r.URL.String()); err == nil {
+				metaData.Domain = parsedURL.Host
+			}
+		}
+	})
+
+	// STEP 4: After we parse <head>, try to find a favicon if none is set
+	c.OnHTML("head", func(e *colly.HTMLElement) {
+		if metaData.Favicon == "" {
+			e.DOM.Find("link[rel]").Each(func(_ int, s *goquery.Selection) {
+				rel := s.AttrOr("rel", "")
+				href := s.AttrOr("href", "")
+				relValues := strings.Fields(rel)
+				for _, rv := range relValues {
+					if rv == "icon" || rv == "shortcut" || rv == "apple-touch-icon" {
+						if href != "" {
+							metaData.Favicon = e.Request.AbsoluteURL(href)
+							return
+						}
+					}
+				}
+			})
+		}
+	})
+
+	// STEP 5: Visit the target page
+	if err := c.Visit(targetURL); err != nil {
+		return MetaDataResponseItem{}, fmt.Errorf("error visiting URL %s: %w", targetURL, err)
+	}
+
+	return metaData, nil
+}
+
+/**
+ * @function FindThumbnailForItem
+ * @description Finds a thumbnail for a given feed item.
+ *              It first checks the cache, then enclosures, then content, and finally fetches metadata.
+ * @param {*gofeed.Item} item The feed item to find a thumbnail for.
+ * @returns {string} The URL of the thumbnail, or an empty string if no thumbnail was found.
+ * @dependencies extractThumbnailFromEnclosures, extractThumbnailFromContent, GetMetaData
+ */
+func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
+	if thumb, ok := tf.cache.Load(item.Link); ok {
+		log.Println("[FindThumbnailForItem] Found cached thumbnail for", item.Link)
+		return thumb.(string)
+	}
+
+	thumbnail := tf.extractThumbnailFromEnclosures(item.Enclosures)
+	if thumbnail != "" {
+		log.Println("[FindThumbnailForItem] Found thumbnail in enclosures for", item.Link)
+		tf.cache.Store(item.Link, thumbnail)
+		return thumbnail
+	}
+
+	thumbnail = tf.extractThumbnailFromContent(item.Content)
+	if thumbnail != "" {
+		log.Println("[FindThumbnailForItem] Found thumbnail in content for", item.Link)
+		tf.cache.Store(item.Link, thumbnail)
+		return thumbnail
+	}
+
+	if item.Link != "" {
+		log.Println("[FindThumbnailForItem] Fetching metadata for", item.Link)
+		metaData, err := GetMetaData(item.Link)
+		if err != nil {
+			log.Printf("Error getting metadata for %s: %v", item.Link, err)
+			return ""
+		}
+
+		if len(metaData.Images) > 0 {
+			thumbnail = metaData.Images[0].URL
+		}
+		if thumbnail != "" {
+			log.Println("[FindThumbnailForItem] Found thumbnail in metadata for", item.Link)
+			tf.cache.Store(item.Link, thumbnail)
+			return thumbnail
+		}
+
+		return ""
+	}
+	return ""
+}
+
+/**
+ * @function extractThumbnailFromEnclosures
+ * @description Extracts a thumbnail URL from a list of enclosures.
+ * @param {[]*gofeed.Enclosure} enclosures The list of enclosures to search.
+ * @returns {string} The URL of the first image enclosure found, or an empty string if none were found.
+ */
+func (tf *ThumbnailFinder) extractThumbnailFromEnclosures(enclosures []*gofeed.Enclosure) string {
+	for _, e := range enclosures {
+		if strings.HasPrefix(e.Type, "image/") {
+			return e.URL
+		}
+	}
+	return ""
+}
+
+/**
+ * @function extractThumbnailFromContent
+ * @description Extracts a thumbnail URL from HTML content.
+ * @param {string} content The HTML content to search.
+ * @returns {string} The URL of the first image found in the content, or an empty string if none were found.
+ * @dependencies goquery
+ */
+func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
+	if err != nil {
+		log.Printf("Error parsing content: %v", err)
+		return ""
+	}
+
+	if src, exists := doc.Find("img").First().Attr("src"); exists {
+		return src
+	}
+	return ""
+}
+
+/**
+ * @function extractColorFromThumbnail_prominentColor
+ * @description Extracts the prominent color from an image URL using the prominentcolor library.
+ *              It first checks the cache, then validates the URL, downloads the image, decodes it,
+ *              and finally extracts the color using the K-means algorithm.
+ * @param {string} imageURL The URL of the image to extract the color from.
+ * @returns {r, g, b uint8} The red, green, and blue components of the prominent color.
+ * @dependencies httpClient, cache, prominentcolor, image.Decode
+ */
+func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("Recovered from panic while processing URL %s: %v", imageURL, rec)
+			r, g, b = 128, 128, 128
+		}
+	}()
+
+	if imageURL == "" {
+		return 128, 128, 128
+	}
+
+	cachePrefix := thumbnailColorPrefix
+	var cachedColor RGBColor
+
+	// Attempt to retrieve the color from the cache
+	err := cache.Get(cachePrefix, imageURL, &cachedColor)
+	if err == nil {
+		log.Printf("[extractColorFromThumbnail_prominentColor] Found cached color for %s: %v", imageURL, cachedColor)
+		return cachedColor.R, cachedColor.G, cachedColor.B
+	}
+
+	// Validate the image URL
+	parsedURL, err := url.Parse(imageURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		log.Printf("Invalid image URL %s", imageURL)
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	if err != nil {
+		log.Printf("Error creating request for prominentColor: %v", err)
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Printf("Failed to download image %s: %v", imageURL, err)
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+	defer resp.Body.Close()
+
+	img, _, err := image.Decode(resp.Body)
+	if err != nil {
+		log.Printf("Failed to decode image %s: %v", imageURL, err)
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+	log.Printf("Starting color extraction for %s", imageURL)
+
+	bounds := img.Bounds()
+	imgNRGBA := image.NewNRGBA(bounds)
+	draw.Draw(imgNRGBA, bounds, img, bounds.Min, draw.Src)
+
+	if imgNRGBA == nil {
+		log.Printf("imgNRGBA is nil for URL %s", imageURL)
+		cacheDefaultColor(imageURL)
+		return 128, 128, 128
+	}
+
+	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
+	if err != nil || len(colors) == 0 {
+		log.Printf("Error extracting prominent color with background mask for %s: %v", imageURL, err)
+		colors, err = prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, nil)
+		if err != nil || len(colors) == 0 {
+			log.Printf("Error extracting prominent color without background mask for %s: %v", imageURL, err)
+			cacheDefaultColor(imageURL)
+			return 128, 128, 128
+		}
+	}
+
+	if len(colors) > 0 {
+		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
+		log.Printf("Extracted color for %s: %v", imageURL, extractedColor)
+		if err := cache.Set(cachePrefix, imageURL, extractedColor, 24*time.Hour); err != nil {
+			log.Printf("Failed to cache color for %s: %v", imageURL, err)
+		}
+		return extractedColor.R, extractedColor.G, extractedColor.B
+	}
+
+	// Cache the default color if extraction fails
+	cacheDefaultColor(imageURL)
+	return 128, 128, 128
+}
+
+/**
+ * @function cacheDefaultColor
+ * @description Caches the default color for a given image URL.
+ * @param {string} imageURL The URL of the image to cache the default color for.
+ * @dependencies cache
+ */
+func cacheDefaultColor(imageURL string) {
+	cachePrefix := thumbnailColorPrefix
+	defaultColor := RGBColor{defaultColor, defaultColor, defaultColor}
+
+	if err := cache.Set(cachePrefix, imageURL, defaultColor, cacheDuration); err != nil {
+		log.Printf("[cacheDefaultColor] Failed to cache default color for %s: %v", imageURL, err)
+	}
+}
+
+/**
+ * @function DiscoverFavicon
+ * @description Discovers the favicon for a given page URL.
+ *              It sends an HTTP GET request to the page, parses the HTML response,
+ *              and searches for link elements with rel attributes containing "icon", "shortcut", or "apple-touch-icon".
+ * @param {string} pageURL The URL of the page to discover the favicon for.
+ * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ * @dependencies httpClient
+ */
+func DiscoverFavicon(pageURL string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		log.Printf("Error creating request for favicon discovery: %v", err)
+		return ""
+	}
+
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Printf("Error fetching page for favicon: %v", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Error fetching page %s for favicon: %s", pageURL, resp.Status)
+		return ""
+	}
+
+	doc, err := html.Parse(resp.Body)
+	if err != nil {
+		log.Printf("Error parsing HTML for favicon: %v", err)
+		return ""
+	}
+
+	favicon := findFavicon(doc)
+
+	if favicon != "" && !strings.HasPrefix(favicon, "http") {
+		if parsedFaviconURL, err := url.Parse(favicon); err == nil {
+			if baseURL, err := url.Parse(pageURL); err == nil {
+				favicon = baseURL.ResolveReference(parsedFaviconURL).String()
+			}
+		}
+	}
+
+	return favicon
+}
+
+/**
+ * @function findFavicon
+ * @description Recursively searches an HTML node tree for a favicon link.
+ * @param {*html.Node} n The root node of the HTML tree to search.
+ * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ */
+func findFavicon(n *html.Node) string {
+	if n.Type == html.ElementNode && n.Data == "link" {
+		relAttr := ""
+		hrefAttr := ""
+		for _, attr := range n.Attr {
+			if attr.Key == "rel" {
+				relAttr = attr.Val
+			} else if attr.Key == "href" {
+				hrefAttr = attr.Val
+			}
+		}
+
+		relValues := strings.Fields(relAttr)
+		for _, relValue := range relValues {
+			if relValue == "icon" || relValue == "shortcut" || relValue == "apple-touch-icon" {
+				if hrefAttr != "" {
+					return hrefAttr
+				}
+			}
+		}
+	}
+
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if favicon := findFavicon(c); favicon != "" {
+			return favicon
+		}
+	}
+
+	return ""
+}
+
+/**
+ * @function DiscoverFaviconWithColly
+ * @description Discovers the favicon for a given page URL using colly.
+ * @param {*colly.Collector} c The colly collector to use for the request.
+ * @param {string} pageURL The URL of the page to discover the favicon for.
+ * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ */
+func DiscoverFaviconWithColly(c *colly.Collector, pageURL string) string {
+	var favicon string
+
+	c.OnHTML("link[rel]", func(e *colly.HTMLElement) {
+		rel := e.Attr("rel")
+		href := e.Attr("href")
+
+		relValues := strings.Fields(rel)
+		for _, relValue := range relValues {
+			if relValue == "icon" || relValue == "shortcut" || relValue == "apple-touch-icon" {
+				if href != "" {
+					favicon = e.Request.AbsoluteURL(href)
+					return
+				}
+			}
+		}
+	})
+
+	c.Visit(pageURL)
+
+	return favicon
+}
+
+//parser.go
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"net"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/net/html"
+
+	"github.com/mmcdole/gofeed"
+	"github.com/sirupsen/logrus"
+)
+
+// The date/time layout format used throughout the code.
+const layout = "2006-01-02T15:04:05Z07:00"
+
+// createHash returns a SHA-256 hash of the given string s.
+func createHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// parseHTMLContent attempts to parse htmlContent as HTML,
+// extracting and returning only the text content. If parsing fails,
+// the original htmlContent is returned unchanged.
+func parseHTMLContent(htmlContent string) string {
+	doc, err := html.Parse(strings.NewReader(htmlContent))
+	if err != nil {
+		// Fallback to the raw HTML if parse fails
+		return htmlContent
+	}
+	var f func(*html.Node)
+	var textContent strings.Builder
+
+	f = func(n *html.Node) {
+		if n.Type == html.TextNode {
+			textContent.WriteString(n.Data)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			f(c)
+		}
+	}
+	f(doc)
+	return textContent.String()
+}
+
+// getBaseDomain attempts to parse rawURL and returns its scheme + hostname (e.g., https://example.com).
+// If parsing fails, an empty string is returned.
+func getBaseDomain(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		log.Printf("[getBaseDomain] Failed to parse URL %s: %v", rawURL, err)
+		return ""
+	}
+	return parsedURL.Scheme + "://" + parsedURL.Host
+}
+
+// Metadata handler
+func metadataHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var urls Urls
+	err := json.NewDecoder(r.Body).Decode(&urls)
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	var wg sync.WaitGroup
+	results := make([]MetaDataResponseItem, len(urls.Urls))
+
+	for i, url := range urls.Urls {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			result, err := GetMetaData(url)
+			if err != nil {
+				log.Printf("Error fetching metadata for URL %s: %v", url, err)
+			} else {
+				results[i] = result
+			}
+		}(i, url)
+	}
+
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string][]MetaDataResponseItem{"metadata": results})
+}
+
+// parseHandler is an HTTP handler for the /parse endpoint,
+// expecting a POST request with a JSON body of feed URLs to parse,
+// plus optional pagination parameters (Page, ItemsPerPage).
+func parseHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Default values for pagination
+	page := 1
+	itemsPerPage := 50
+
+	// Decode request into ParseRequest
+	req, err := decodeRequest(r)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// If user provided a page > 0, use it; otherwise keep default
+	if req.Page > 0 {
+		page = req.Page
+	}
+	// If user provided itemsPerPage > 0, use it; otherwise keep default
+	if req.ItemsPerPage > 0 {
+		itemsPerPage = req.ItemsPerPage
+	}
+
+	responses := processURLs(req.URLs, page, itemsPerPage)
+	sendResponse(w, responses)
+}
+
+// decodeRequest reads and unmarshals the request body into a ParseRequest object.
+func decodeRequest(r *http.Request) (ParseRequest, error) {
+	var req ParseRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	return req, err
+}
+
+// processURLs concurrently processes each feed URL using processURL,
+// returns all feed responses (with pagination applied) as a slice.
+func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, numWorkers)
+	responses := make(chan FeedResponse, len(urls))
+
+	for _, url := range urls {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(feedURL string) {
+			defer func() {
+				wg.Done()
+				<-sem
+			}()
+			response := processURL(feedURL, page, itemsPerPage)
+			responses <- response
+		}(url)
+	}
+
+	go func() {
+		wg.Wait()
+		close(responses)
+	}()
+
+	return collectResponses(responses)
+}
+
+// isCacheStale checks whether lastRefreshed is older than refresh_timer (in minutes).
+func isCacheStale(lastRefreshed string) bool {
+	parsedTime, err := time.Parse(layout, lastRefreshed)
+	if err != nil {
+		log.Printf("[isCacheStale] Failed to parse LastRefreshed: %v", err)
+		return false
+	}
+
+	if time.Since(parsedTime) > time.Duration(refresh_timer)*time.Minute {
+		log.Printf("[isCacheStale] Cache is stale (older than %d minutes)", refresh_timer)
+		return true
+	}
+	return false
+}
+
+// fetchAndCacheFeed fetches the remote feed from feedURL, merges with existing items (if any),
+// and caches the final FeedResponse. Returns the FeedResponse or an error if any step fails.
+func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
+	parser := gofeed.NewParser()
+	feed, err := parser.ParseURL(feedURL)
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   feedURL,
+			"error": err,
+		}).Error("[fetchAndCacheFeed] Failed to parse feedURL")
+		return FeedResponse{}, err
+	}
+
+	// Convert newly fetched feed to items.
+	newItems := processFeedItems(feed)
+
+	// Merge new items with existing items from the last 24 hours.
+	mergedItems, mergeErr := mergeFeedItemsAtParserLevel(feedURL, newItems)
+	if mergeErr != nil {
+		return FeedResponse{}, mergeErr
+	}
+
+	baseDomain := getBaseDomain(feed.Link)
+	addURLToList(feedURL)
+
+	// Possibly fetch additional metadata from cache
+	var metaData MetaDataResponseItem
+
+	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
+
+	baseDomainKey := createHash(baseDomain)
+	if err := cache.Get(metaData_prefix, baseDomainKey, &metaData); err != nil {
+		if isValidURL(baseDomain) {
+			tempMeta, errGet := GetMetaData(baseDomain)
+			if errGet != nil {
+				log.Printf("[fetchAndCacheFeed] Failed to get metadata for %s: %v", baseDomain, errGet)
+			} else {
+				metaData = tempMeta
+				if errSet := cache.Set(metaData_prefix, baseDomainKey, metaData, 24*time.Hour); errSet != nil {
+					log.Printf("[fetchAndCacheFeed] Failed to cache metadata for %s: %v", baseDomain, errSet)
+				}
+			}
+		} else {
+			metaData = MetaDataResponseItem{}
+			log.Printf("[fetchAndCacheFeed] Invalid baseDomain %s", baseDomain)
+		}
+	} else {
+		log.Printf("[fetchAndCacheFeed] Loaded metadata from cache for %s", baseDomain)
+	}
+
+	// Build final FeedResponse from the merged items
+	finalFeedResponse := createFeedResponse(feed, feedURL, metaData, mergedItems)
+
+	// Cache the final feed response
+	if err := cache.Set(feed_prefix, cacheKey, finalFeedResponse, 24*time.Hour); err != nil {
+		log.WithFields(logrus.Fields{"url": feedURL, "error": err}).
+			Error("[fetchAndCacheFeed] Failed to cache feed details")
+		return FeedResponse{}, err
+	}
+
+	log.Infof("[fetchAndCacheFeed] Successfully cached feed details for %s", feedURL)
+	return finalFeedResponse, nil
+}
+
+// processURL checks the cache for a feed URL; if found and not stale, returns the cached feed.
+// Otherwise, calls fetchAndCacheFeed to retrieve and cache a fresh feed. Pagination is then applied
+// to the final list of items before returning.
+func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
+	feedURL := sanitizeURL(rawURL)
+	cacheKey := feedURL
+
+	var cachedFeed FeedResponse
+	// Try retrieving from cache first
+	if err := cache.Get(feed_prefix, cacheKey, &cachedFeed); err == nil && cachedFeed.SiteTitle != "" {
+		// Cache hit
+		log.WithFields(logrus.Fields{"url": feedURL}).
+			Info("[processURL] [Cache Hit] Using cached feed details")
+
+		// Check staleness
+		if isCacheStale(cachedFeed.LastRefreshed) {
+			log.WithFields(logrus.Fields{"url": feedURL}).
+				Info("[processURL] Cache is stale, refreshing in background")
+			go func() {
+				if _, errRefresh := fetchAndCacheFeed(feedURL, cacheKey); errRefresh != nil {
+					log.WithFields(logrus.Fields{
+						"url":   feedURL,
+						"error": errRefresh,
+					}).Error("[processURL] Failed to refresh feed in background")
+				}
+			}()
+		}
+
+		// Optionally re-check or skip thumbnail colors
+		updatedItems := updateFeedItemsWithThumbnailColors(cachedFeed.Items)
+		// Reassign updated items
+		cachedFeed.Items = &updatedItems
+
+		// **Apply pagination** to the final items
+		applyPagination(cachedFeed.Items, page, itemsPerPage)
+
+		return cachedFeed
+	}
+
+	// Cache miss or empty feed
+	log.WithFields(logrus.Fields{"url": feedURL}).
+		Info("[processURL] [Cache Miss] Fetching fresh feed")
+
+	newResp, errNew := fetchAndCacheFeed(feedURL, cacheKey)
+	if errNew != nil {
+		log.WithFields(logrus.Fields{"url": feedURL, "error": errNew}).
+			Error("[processURL] Failed to fetch and cache feed")
+
+		return FeedResponse{
+			Type:    "unknown",
+			FeedUrl: feedURL,
+			GUID:    cacheKey,
+			Status:  "error",
+			Error:   errNew,
+		}
+	}
+
+	// Optionally re-check or skip thumbnail colors
+	updatedItems := updateFeedItemsWithThumbnailColors(newResp.Items)
+	newResp.Items = &updatedItems
+
+	// **Apply pagination** to the final items
+	applyPagination(newResp.Items, page, itemsPerPage)
+
+	return newResp
+}
+
+// applyPagination modifies the feed items in place, slicing to the requested page and itemsPerPage
+// (e.g. page=2, itemsPerPage=10 => skip first 10 items, return next 10).
+func applyPagination(items *[]FeedResponseItem, page, itemsPerPage int) {
+	if items == nil || len(*items) == 0 {
+		return
+	}
+	if page < 1 {
+		page = 1
+	}
+	if itemsPerPage < 1 {
+		itemsPerPage = 1
+	}
+
+	totalItems := len(*items)
+	start := (page - 1) * itemsPerPage
+	if start >= totalItems {
+		// If start is beyond total items, return empty
+		*items = []FeedResponseItem{}
+		return
+	}
+
+	end := start + itemsPerPage
+	if end > totalItems {
+		end = totalItems
+	}
+
+	// Slice the items
+	*items = (*items)[start:end]
+}
+
+// updateFeedItemsWithThumbnailColors iterates over existing items in a feed,
+// calling updateThumbnailColorForItem to finalize or skip color checks.
+func updateFeedItemsWithThumbnailColors(items *[]FeedResponseItem) []FeedResponseItem {
+	if items == nil {
+		return nil
+	}
+	var updatedItems []FeedResponseItem
+	for _, item := range *items {
+		updatedItem := updateThumbnailColorForItem(item)
+		updatedItems = append(updatedItems, updatedItem)
+	}
+	return updatedItems
+}
+
+// updateThumbnailColorForItem checks if we have a cached color for the item’s thumbnail.
+// If so, sets item.ThumbnailColor. Otherwise, logs that color is not yet available.
+func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
+	var cachedColor RGBColor
+	err := cache.Get(thumbnailColorPrefix, item.Thumbnail, &cachedColor)
+
+	switch {
+	case err != nil:
+		log.Printf("[updateThumbnailColorForItem] No cached color for %s yet", item.Thumbnail)
+	case item.ThumbnailColorComputed == "set":
+		// Already set
+	case item.ThumbnailColorComputed == "computed":
+		item.ThumbnailColor = cachedColor
+		item.ThumbnailColorComputed = "set"
+		log.Printf("[updateThumbnailColorForItem] Updated color for %s: %v", item.Thumbnail, item.ThumbnailColor)
+	case item.ThumbnailColorComputed == "no":
+		if cachedColor != (RGBColor{}) {
+			item.ThumbnailColor = cachedColor
+			item.ThumbnailColorComputed = "set"
+			log.Printf("[updateThumbnailColorForItem] Updated color for %s: %v", item.Thumbnail, item.ThumbnailColor)
+		}
+	default:
+		// No additional logic
+	}
+	return item
+}
+
+// processFeedItems validates feed, concurrency processes each item, returning a slice of FeedResponseItem.
+func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
+	// Safeguard feed == nil or feed.Items is nil/empty
+	if feed == nil {
+		log.Error("[processFeedItems] feed is nil; returning empty slice")
+		return nil
+	}
+	if len(feed.Items) == 0 {
+		log.Warnf("[processFeedItems] feed.Items is empty for feed: %q", feed.Title)
+		return nil
+	}
+
+	thumbnail := ""
+	defaultThumbnailColor := RGBColor{128, 128, 128}
+	// If iTunes image is present, compute default color
+	if feed.ITunesExt != nil && feed.ITunesExt.Image != "" {
+		thumbnail = feed.ITunesExt.Image
+		r, g, b := extractColorFromThumbnail_prominentColor(thumbnail)
+		defaultThumbnailColor = RGBColor{r, g, b}
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, numWorkers)
+	itemResponses := make(chan FeedResponseItem, len(feed.Items))
+
+	for _, item := range feed.Items {
+		if item == nil {
+			log.Warn("[processFeedItems] Skipping nil item")
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(it *gofeed.Item) {
+			defer func() {
+				wg.Done()
+				<-sem
+			}()
+			itemResponse := processFeedItem(it, thumbnail, defaultThumbnailColor)
+			itemResponses <- itemResponse
+		}(item)
+	}
+
+	go func() {
+		wg.Wait()
+		close(itemResponses)
+	}()
+
+	return collectItemResponses(itemResponses)
+}
+
+// processFeedItem creates a FeedResponseItem from a single gofeed.Item,
+// attempting to discover a thumbnail if not set, and sets a default or cached color.
+func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColor) FeedResponseItem {
+	author := getItemAuthor(item)
+	categories := strings.Join(item.Categories, ", ")
+
+	// Possibly override the feed-level thumbnail with item enclosures
+	if len(item.Enclosures) > 0 {
+		for _, enclosure := range item.Enclosures {
+			if enclosure.URL != "" && strings.HasPrefix(enclosure.Type, "image/") {
+				thumbnail = enclosure.URL
+				break
+			}
+		}
+	}
+	if thumbnail == "" && item.Image != nil && item.Image.URL != "" {
+		thumbnail = item.Image.URL
+	}
+	if item.ITunesExt != nil && item.ITunesExt.Image != "" {
+		thumbnail = item.ITunesExt.Image
+	}
+
+	// Attempt to discover a thumbnail from content if still empty
+	if thumbnail == "" {
+		finder := NewThumbnailFinder()
+		discovered := finder.FindThumbnailForItem(item)
+		if discovered != "" {
+			thumbnail = discovered
+		}
+	}
+
+	thumbnailColorComputed := "no"
+	// If thumbnail color is cached, set it directly; otherwise compute async
+	var cachedColor RGBColor
+	cacheMutex.Lock()
+	err := cache.Get(thumbnailColor_prefix, thumbnail, &cachedColor)
+	cacheMutex.Unlock()
+	if err == nil {
+		thumbnailColor = cachedColor
+		thumbnailColorComputed = "set"
+	} else {
+		// Async compute if not cached
+		go func(thURL string) {
+			if thURL == "" {
+				return
+			}
+			r, g, b := extractColorFromThumbnail_prominentColor(thURL)
+			actualColor := RGBColor{r, g, b}
+			if cErr := cache.Set(thumbnailColor_prefix, thURL, actualColor, 24*time.Hour); cErr != nil {
+				log.Printf("[processFeedItem] Failed to cache color for %s: %v", thURL, cErr)
+			}
+		}(thumbnail)
+	}
+
+	desc := item.Description
+	if desc == "" {
+		desc = parseHTMLContent(item.Content)
+	}
+	desc = parseHTMLContent(desc)
+
+	// Standardize item published date
+	standardizedPublished := standardizeDate(item.Published)
+
+	// Identify if it's a podcast and parse duration if so
+	itemType, duration := determineItemTypeAndDuration(item)
+
+	return FeedResponseItem{
+		Type:                   itemType,
+		ID:                     createHash(item.Link),
+		Title:                  item.Title,
+		Description:            desc,
+		Link:                   item.Link,
+		Duration:               duration,
+		Author:                 author,
+		Published:              standardizedPublished,
+		Created:                standardizedPublished,
+		Content:                parseHTMLContent(item.Content),
+		Content_Encoded:        item.Content,
+		Categories:             categories,
+		Enclosures:             item.Enclosures,
+		Thumbnail:              thumbnail,
+		ThumbnailColor:         thumbnailColor,
+		ThumbnailColorComputed: thumbnailColorComputed,
+	}
+}
+
+// standardizeDate parses dateStr in various known formats (RFC3339, RFC1123, etc.).
+// Returns the date in a standard layout or empty if parse fails.
+func standardizeDate(dateStr string) string {
+	if dateStr == "" {
+		log.Info("[standardizeDate] Empty date string")
+		return ""
+	}
+	const outputLayout = "2006-01-02T15:04:05Z07:00"
+	dateFormats := []string{
+		time.RFC1123,
+		time.RFC1123Z,
+		time.RFC3339,
+		time.RFC822,
+		time.RFC850,
+		time.ANSIC,
+		"Mon, 02 Jan 2006 15:04:05 -0700",
+	}
+	for _, layout := range dateFormats {
+		if parsedTime, err := time.Parse(layout, dateStr); err == nil {
+			return parsedTime.Format(outputLayout)
+		}
+	}
+	log.Infof("[standardizeDate] Failed to parse date: %v", dateStr)
+	return ""
+}
+
+// createFeedResponse builds a FeedResponse struct from a parsed feed object, feed metadata, and items.
+func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
+	if feed == nil {
+		log.Errorf("[createFeedResponse] feed is nil for %s", feedURL)
+		return FeedResponse{}
+	}
+
+	var feedType, thumbnail string
+	if feed.ITunesExt != nil {
+		feedType = "podcast"
+		if feed.Image != nil && feed.Image.URL != "" {
+			thumbnail = feed.Image.URL
+		}
+	} else {
+		feedType = "article"
+		if metaData.Favicon != "" {
+			thumbnail = metaData.Favicon
+		} else if feed.Image != nil && feed.Image.URL != "" {
+			thumbnail = feed.Image.URL
+		}
+	}
+
+	siteTitle := metaData.Title
+	if siteTitle == "" {
+		siteTitle = feed.Title
+	}
+
+	return FeedResponse{
+		Status:        "ok",
+		GUID:          createHash(feedURL),
+		Type:          feedType,
+		SiteTitle:     siteTitle,
+		FeedTitle:     feed.Title,
+		FeedUrl:       feedURL,
+		Description:   feed.Description,
+		Link:          metaData.Domain,
+		LastUpdated:   standardizeDate(feed.Updated),
+		LastRefreshed: time.Now().Format(layout),
+		Published:     feed.Published,
+		Author:        feed.Author,
+		Language:      feed.Language,
+		Favicon:       thumbnail,
+		Categories:    strings.Join(feed.Categories, ", "),
+		Items:         &feedItems,
+	}
+}
+
+// collectResponses reads FeedResponse objects from a channel, returning them as a slice.
+func collectResponses(responses chan FeedResponse) []FeedResponse {
+	var all []FeedResponse
+	for resp := range responses {
+		all = append(all, resp)
+	}
+	return all
+}
+
+// collectItemResponses reads FeedResponseItem objects from a channel, returning them as a slice.
+// The items are then sorted by descending Published date.
+func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseItem {
+	var feedItems []FeedResponseItem
+	for itemResponse := range itemResponses {
+		feedItems = append(feedItems, itemResponse)
+	}
+	// Sort by published date (descending)
+	sort.Slice(feedItems, func(i, j int) bool {
+		timeI, errI := time.Parse(layout, feedItems[i].Published)
+		if errI != nil {
+			log.Printf("[collectItemResponses] Failed to parse time for item I: %v", errI)
+			return false
+		}
+		timeJ, errJ := time.Parse(layout, feedItems[j].Published)
+		if errJ != nil {
+			log.Printf("[collectItemResponses] Failed to parse time for item J: %v", errJ)
+			return true
+		}
+		return timeI.After(timeJ)
+	})
+	return feedItems
+}
+
+// sendResponse writes a JSON-encoded Feeds struct to the ResponseWriter.
+func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+
+	feeds := Feeds{Feeds: responses}
+	if err := enc.Encode(feeds); err != nil {
+		log.Errorf("[sendResponse] Failed to encode feed responses: %v", err)
+	}
+}
+
+// refreshFeeds retrieves all known feed URLs from the cache and re-processes them
+// (useful for cron-based or ticker-based refreshing).
+func refreshFeeds() {
+	urls := getAllCachedURLs()
+	for _, url := range urls {
+		log.Printf("[refreshFeeds] Refreshing feed for URL: %s", url)
+		_ = processURL(url, 1, 20) // or any default paging
+	}
+}
+
+// addURLToList ensures the feed URL is tracked in urlList (the list of subscribed or known feeds).
+func addURLToList(url string) {
+	urlListMutex.Lock()
+	defer urlListMutex.Unlock()
+
+	if !stringInSlice(url, urlList) {
+		urlList = append(urlList, url)
+	}
+}
+
+// getAllCachedURLs returns all known feed URLs from the cache or from an in-memory list.
+// If none are found, returns an empty slice.
+func getAllCachedURLs() []string {
+	urlListMutex.Lock()
+	defer urlListMutex.Unlock()
+
+	if len(urlList) == 0 {
+		startTime := time.Now()
+
+		var err error
+		urlList, err = cache.GetSubscribedListsFromCache(feed_prefix)
+		if err != nil {
+			log.Warnf("[getAllCachedURLs] Failed to get subscribed feeds from cache: %v", err)
+			return nil
+		}
+
+		duration := time.Since(startTime)
+		log.Infof("[getAllCachedURLs] Loaded urlList from cache: %v, took %v", urlList, duration)
+	}
+
+	// return a copy
+	return append([]string(nil), urlList...)
+}
+
+// isValidURL checks if str is a syntactically valid URL with a resolvable host or IP.
+func isValidURL(str string) bool {
+	parsedURL, err := url.ParseRequestURI(str)
+	if err != nil {
+		logrus.Info(err.Error())
+		return false
+	}
+	host := parsedURL.Hostname()
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	return strings.Contains(host, ".")
+}
+
+// sanitizeURL ensures URLs always use https:// if no scheme or if http://
+func sanitizeURL(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || parsedURL.Scheme == "" {
+		return "https://" + rawURL
+	} else if parsedURL.Scheme == "http" {
+		return strings.Replace(rawURL, "http://", "https://", 1)
+	}
+	return rawURL
+}
+
+// getItemAuthor returns an item’s author if set, checking iTunesExt first (for podcasts).
+func getItemAuthor(item *gofeed.Item) string {
+	if item.ITunesExt != nil && item.ITunesExt.Author != "" {
+		return item.ITunesExt.Author
+	}
+	if item.Author != nil && item.Author.Name != "" {
+		return item.Author.Name
+	}
+	return ""
+}
+
+// determineItemTypeAndDuration checks if the feed item is a podcast. If yes,
+// parses the item’s duration. Returns a type (podcast or article) and the duration in seconds.
+func determineItemTypeAndDuration(item *gofeed.Item) (string, int) {
+	if item.ITunesExt != nil {
+		return "podcast", parseDuration(item.ITunesExt.Duration)
+	}
+	return "article", 0
+}
+
+// parseDuration attempts to convert a time-like string (e.g., 3600 or HH:MM:SS) into total seconds.
+func parseDuration(durationStr string) int {
+	if durationStr == "" {
+		return 0
+	}
+
+	// Try integer first
+	if durationInt, err := strconv.Atoi(durationStr); err == nil {
+		return durationInt
+	}
+
+	// Possibly HH:MM:SS or MM:SS
+	parts := strings.Split(durationStr, ":")
+	switch len(parts) {
+	case 3:
+		hours, _ := strconv.Atoi(parts[0])
+		minutes, _ := strconv.Atoi(parts[1])
+		seconds, _ := strconv.Atoi(parts[2])
+		return hours*3600 + minutes*60 + seconds
+	case 2:
+		minutes, _ := strconv.Atoi(parts[0])
+		seconds, _ := strconv.Atoi(parts[1])
+		return minutes*60 + seconds
+	default:
+		return 0
+	}
+}
+
+// stringInSlice returns true if str is found in the slice list.
+func stringInSlice(str string, list []string) bool {
+	for _, v := range list {
+		if v == str {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeFeedItemsAtParserLevel merges old items from the cache with newly fetched items, deduplicating by ID
+// and retaining only items from within the last 24 hours (cachePeriod). Also updates items if content changed.
+func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([]FeedResponseItem, error) {
+	cacheKey := feedURL
+	var existingFeedResponse FeedResponse
+	var existingItems []FeedResponseItem
+
+	// Attempt to get an existing feed from the cache
+	if err := cache.Get(feed_prefix, cacheKey, &existingFeedResponse); err != nil {
+		log.Errorf("[mergeFeedItemsAtParserLevel] Error getting existing items for feed %s: %v", feedURL, err)
+		existingItems = nil
+	} else {
+		if existingFeedResponse.Items != nil {
+			existingItems = *existingFeedResponse.Items
+			log.Printf("[mergeFeedItemsAtParserLevel] Found %d existing items for feed %s", len(existingItems), feedURL)
+		}
+	}
+
+	itemMap := make(map[string]FeedResponseItem)
+	log.Printf("[mergeFeedItemsAtParserLevel] Merging %d existing items with %d new items", len(existingItems), len(newItems))
+	for _, oldItem := range existingItems {
+		if isWithinPeriod(oldItem, cachePeriod) {
+			itemMap[oldItem.ID] = oldItem
+		}
+	}
+
+	// Merge new items
+	for _, newIt := range newItems {
+		if oldIt, found := itemMap[newIt.ID]; found {
+			if isUpdatedContent(oldIt, newIt) {
+				itemMap[newIt.ID] = newIt
+			}
+		} else {
+			if isWithinPeriod(newIt, cachePeriod) {
+				itemMap[newIt.ID] = newIt
+			}
+		}
+	}
+
+	merged := make([]FeedResponseItem, 0, len(itemMap))
+	for _, v := range itemMap {
+		merged = append(merged, v)
+	}
+
+	// Store merged items in the cache so subsequent fetches have updated items
+	if err := cache.Set(feed_prefix, feedURL, merged, 24*time.Hour); err != nil {
+		return nil, err
+	}
+
+	return merged, nil
+}
+
+// isWithinPeriod returns true if the FeedResponseItem’s Published date is within 'days' days of now.
+func isWithinPeriod(item FeedResponseItem, days int) bool {
+	t, err := time.Parse(layout, item.Published)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) <= time.Duration(days)*24*time.Hour
+}
+
+// isUpdatedContent returns true if newIt is more recent than oldIt by published date
+// or if newIt’s content differs from oldIt’s content.
+func isUpdatedContent(oldIt, newIt FeedResponseItem) bool {
+	oldTime, _ := time.Parse(layout, oldIt.Published)
+	newTime, _ := time.Parse(layout, newIt.Published)
+
+	// If new item is more recent
+	if newTime.After(oldTime) {
+		return true
+	}
+	// If content changed
+	if newIt.Content != oldIt.Content {
+		return true
+	}
+	return false
+}
+
+//routes.go
+package main
+
+import (
+	"net/http"
+)
+
+func errorMiddlewareFunc(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				log.Printf("An error occurred: %v", err)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+		next(w, r)
+	}
+}
+
+// InitializeRoutes sets up all the routes for the application
+func InitializeRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/validate", errorMiddlewareFunc(validateURLsHandler))
+	mux.HandleFunc("/parse", errorMiddlewareFunc(parseHandler))
+	mux.HandleFunc("/discover", errorMiddlewareFunc(discoverHandler))
+	mux.HandleFunc("/getreaderview", errorMiddlewareFunc(getReaderViewHandler))
+	mux.HandleFunc("/create", errorMiddlewareFunc(createShareHandler))
+	mux.HandleFunc("/share", errorMiddlewareFunc(shareHandler))
+	mux.HandleFunc("/search", errorMiddlewareFunc(searchHandler))
+	mux.HandleFunc("/streamaudio", errorMiddlewareFunc(streamAudioHandler))
+	mux.HandleFunc("/metadata", errorMiddlewareFunc(metadataHandler))
+}
+
+//streamaudio.go
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	texttospeech "cloud.google.com/go/texttospeech/apiv1"
+	"cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
+)
+
+var (
+	ttsClient *texttospeech.Client
+	once      sync.Once
+)
+
+func initTTSClient() {
+	var err error
+	ttsClient, err = texttospeech.NewClient(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to create TTS client: %v", err)
+	}
+}
+
+func splitTextIntoChunks(text string, maxChunkSize int) []string {
+	var chunks []string
+	words := strings.Fields(text)
+	var chunk string
+
+	for _, word := range words {
+		if len(chunk)+len(word)+1 > maxChunkSize {
+			chunks = append(chunks, chunk)
+			chunk = word
+		} else {
+			if chunk != "" {
+				chunk += " "
+			}
+			chunk += word
+		}
+	}
+	if chunk != "" {
+		chunks = append(chunks, chunk)
+	}
+
+	return chunks
+}
+
+func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
+	log.Print("Received request to stream audio")
+
+	// Ensure it's a POST request
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Read and parse the request body
+	var ttsReq TTSRequest
+	err := json.NewDecoder(r.Body).Decode(&ttsReq)
+	if err != nil {
+		http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Print("Request: ", ttsReq.Text)
+	log.Print("Request URL: ", ttsReq.Url)
+
+	// Check if text is provided
+	if ttsReq.Text == "" {
+		http.Error(w, "No text provided", http.StatusBadRequest)
+		return
+	} else if ttsReq.Url != "" {
+		// Check if the URL is valid
+		if !(strings.HasPrefix(ttsReq.Url, "http://") || strings.HasPrefix(ttsReq.Url, "https://")) {
+			http.Error(w, "Invalid URL provided", http.StatusBadRequest)
+			return
+		}
+	}
+
+	cacheKey := ttsReq.Url
+
+	var cachedAudio []byte
+	// Check if the audio content is cached
+	err = cache.Get(audio_prefix, cacheKey, &cachedAudio)
+	if err == nil {
+		log.Print("Audio content found in cache")
+		// Set the headers and write the audio content to the response
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Length", fmt.Sprint(len(cachedAudio)))
+
+		// Write the audio content to the response
+		_, err = w.Write(cachedAudio)
+
+		if err != nil {
+			log.Printf("Failed to write audio content to response: %v", err)
+		}
+		return
+	}
+
+	// Initialize the TTS client once
+	once.Do(initTTSClient)
+
+	log.Print("Text to be synthesized: ", ttsReq.Text)
+	const maxChunkSize = 1000
+
+	// Split text into chunks of up to 1000 characters
+	chunks := splitTextIntoChunks(ttsReq.Text, maxChunkSize)
+
+	var audioContent bytes.Buffer
+
+	for _, chunk := range chunks {
+		req := texttospeechpb.SynthesizeSpeechRequest{
+			// Set the text input to be synthesized.
+			Input: &texttospeechpb.SynthesisInput{
+				InputSource: &texttospeechpb.SynthesisInput_Text{Text: chunk},
+			},
+			// Build the voice request, select the language code ("en-US") and the SSML
+			// voice gender ("neutral").
+			Voice: &texttospeechpb.VoiceSelectionParams{
+				LanguageCode: "en-US",
+				Name:         "en-US-Neural2-J",
+			},
+			// Select the type of audio file you want returned.
+			AudioConfig: &texttospeechpb.AudioConfig{
+				AudioEncoding: *texttospeechpb.AudioEncoding_MP3.Enum(),
+			},
+		}
+		// Perform the text-to-speech request
+		resp, err := ttsClient.SynthesizeSpeech(context.Background(), &req)
+		if err != nil {
+			log.Printf("Failed to synthesize speech: %v", err)
+			http.Error(w, "Failed to synthesize speech", http.StatusInternalServerError)
+			return
+		} else {
+			log.Print("Speech synthesized successfully")
+		}
+
+		// Append the audio content to the buffer
+		audioContent.Write(resp.AudioContent)
+	}
+
+	// Cache the audio content
+	if err := cache.Set(audio_prefix, cacheKey, audioContent.Bytes(), 7*24*time.Hour); err != nil {
+		log.Printf("Failed to cache audio content: %v", err)
+	} else {
+		log.Print("Audio content cached successfully for url: ", cacheKey)
+	}
+
+	// Set the headers and write the audio content to the response
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Content-Length", fmt.Sprint(audioContent.Len()))
+
+	// Write the audio content to the response
+	_, err = w.Write(audioContent.Bytes())
+	if err != nil {
+		log.Printf("Failed to write audio content to response: %v", err)
+	}
+}
+
