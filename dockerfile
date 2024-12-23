@@ -19,24 +19,6 @@
     
     # Install necessary packages for Chromium
     RUN apt-get update && apt-get install -y --no-install-recommends \
-        libnss3 \
-        libatk-bridge2.0-0 \
-        libgtk-3-0 \
-        libx11-xcb1 \
-        libxcomposite1 \
-        libxcursor1 \
-        libxdamage1 \
-        libxext6 \
-        libxfixes3 \
-        libxi6 \
-        libxrandr2 \
-        libxrender1 \
-        libxss1 \
-        libxtst6 \
-        fonts-liberation \
-        libappindicator3-1 \
-        libasound2 \
-        chromium \
         ca-certificates \
         # Clean up apt caches to reduce image size
         && apt-get clean && rm -rf /var/lib/apt/lists/*

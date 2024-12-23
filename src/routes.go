@@ -26,4 +26,5 @@ func InitializeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/share", errorMiddlewareFunc(shareHandler))
 	mux.HandleFunc("/search", errorMiddlewareFunc(searchHandler))
 	mux.HandleFunc("/streamaudio", errorMiddlewareFunc(streamAudioHandler))
+	mux.HandleFunc("/metadata", errorMiddlewareFunc(metadataHandler))
 }

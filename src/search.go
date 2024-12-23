@@ -116,7 +116,7 @@ func calculateAuth(key, secret, datestr string) string {
 	log.Println("Hash Calculated as: ", h)
 	return hex.EncodeToString(h.Sum(nil))
 }
-func searchPodcast(r *http.Request, query string) []PodcastSearchResponseItem {
+func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
 	log.Println("Search request received for Podcast with query: ", query)
 	key := os.Getenv("PODCAST_INDEX_API_KEY")
 	secret := os.Getenv("PODCAST_INDEX_API_SECRET")

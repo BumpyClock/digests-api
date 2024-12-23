@@ -27,7 +27,7 @@ func createShareHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Urls == nil || len(req.Urls) == 0 {
+	if len(req.Urls) == 0 {
 		http.Error(w, "No URLs provided", http.StatusBadRequest)
 		response := map[string]string{
 			"status": "error",

@@ -15,7 +15,6 @@ import (
 
 	"golang.org/x/net/html"
 
-	link2json "github.com/BumpyClock/go-link2json"
 	"github.com/mmcdole/gofeed"
 	"github.com/sirupsen/logrus"
 )
@@ -62,6 +61,42 @@ func getBaseDomain(rawURL string) string {
 		return ""
 	}
 	return parsedURL.Scheme + "://" + parsedURL.Host
+}
+
+// Metadata handler
+func metadataHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var urls Urls
+	err := json.NewDecoder(r.Body).Decode(&urls)
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	var wg sync.WaitGroup
+	results := make([]MetaDataResponseItem, len(urls.Urls))
+
+	for i, url := range urls.Urls {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			result, err := GetMetaData(url)
+			if err != nil {
+				log.Printf("Error fetching metadata for URL %s: %v", url, err)
+			} else {
+				results[i] = result
+			}
+		}(i, url)
+	}
+
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string][]MetaDataResponseItem{"metadata": results})
 }
 
 // parseHandler is an HTTP handler for the /parse endpoint,
@@ -173,7 +208,7 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 	addURLToList(feedURL)
 
 	// Possibly fetch additional metadata from cache
-	var metaData link2json.MetaDataResponseItem
+	var metaData MetaDataResponseItem
 
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
@@ -191,7 +226,7 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 				}
 			}
 		} else {
-			metaData = link2json.MetaDataResponseItem{}
+			metaData = MetaDataResponseItem{}
 			log.Printf("[fetchAndCacheFeed] Invalid baseDomain %s", baseDomain)
 		}
 	} else {
@@ -351,8 +386,8 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 		log.Error("[processFeedItems] feed is nil; returning empty slice")
 		return nil
 	}
-	if feed.Items == nil || len(feed.Items) == 0 {
-		log.Warnf("[processFeedItems] feed.Items is nil or empty for feed: %q", feed.Title)
+	if len(feed.Items) == 0 {
+		log.Warnf("[processFeedItems] feed.Items is empty for feed: %q", feed.Title)
 		return nil
 	}
 
@@ -507,7 +542,7 @@ func standardizeDate(dateStr string) string {
 }
 
 // createFeedResponse builds a FeedResponse struct from a parsed feed object, feed metadata, and items.
-func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData link2json.MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
+func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
 	if feed == nil {
 		log.Errorf("[createFeedResponse] feed is nil for %s", feedURL)
 		return FeedResponse{}
