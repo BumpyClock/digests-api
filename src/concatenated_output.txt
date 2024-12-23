@@ -1,19 +1,34 @@
 //getreaderview.go
+// Package main provides the main functionality for the web server.
 package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	readability "github.com/go-shiori/go-readability"
 )
 
+/**
+ * @function getReaderViewResult
+ * @description Retrieves the reader view of a given URL using the go-readability library.
+ *              It returns a ReaderViewResult containing the parsed content or an error.
+ * @param {string} url The URL to retrieve the reader view for.
+ * @returns {ReaderViewResult} A struct containing the reader view result or an error.
+ * @dependencies getReaderView, log
+ */
 func getReaderViewResult(url string) ReaderViewResult {
 	readerView, err := getReaderView(url)
 	if err != nil {
-		log.Errorf("[ReaderView] Error retrieving content for %s: %v", url, err)
+		log.WithFields(logrus.Fields{
+			"url":   url,
+			"error": err,
+		}).Error("[ReaderView] Error retrieving content")
 		return ReaderViewResult{
 			URL:    url,
 			Status: "error",
@@ -32,16 +47,30 @@ func getReaderViewResult(url string) ReaderViewResult {
 	}
 }
 
+/**
+ * @function getReaderViewHandler
+ * @description Handles HTTP requests to the /getreaderview endpoint.
+ *              It expects a POST request with a JSON body containing an array of URLs.
+ *              It retrieves the reader view for each URL, caches the results, and returns a JSON response.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies getReaderViewResult, cache, createHash, log
+ */
 func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		log.Warnf("[ReaderView] Invalid method: %s", r.Method)
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[ReaderView] Invalid method")
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
 	var urls Urls
 	if err := json.NewDecoder(r.Body).Decode(&urls); err != nil {
-		log.Errorf("[ReaderView] Error decoding request body: %v", err)
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[ReaderView] Error decoding request body")
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -58,17 +87,24 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 			var result ReaderViewResult
 
 			if err := cache.Get(readerView_prefix, cacheKey, &result); err != nil {
-				log.Infof("[ReaderView] Cache miss for %s", url)
+				log.WithFields(logrus.Fields{
+					"url": url,
+				}).Info("[ReaderView] Cache miss")
 				result = getReaderViewResult(url)
 				if len(result.TextContent) < 100 {
 					result.TextContent = `<div id="readability-page-1" class="page"><p id="cmsg">Error getting reader view or site requires subscription. Please open the link in a new tab.</p></div>`
 					result.ReaderView = result.TextContent
 				}
 				if err := cache.Set(readerView_prefix, cacheKey, result, 24*time.Hour); err != nil {
-					log.Errorf("[ReaderView] Failed to cache reader view for %s: %v", url, err)
+					log.WithFields(logrus.Fields{
+						"url":   url,
+						"error": err,
+					}).Error("[ReaderView] Failed to cache reader view")
 				}
 			} else {
-				log.Infof("[ReaderView] Cache hit for %s", url)
+				log.WithFields(logrus.Fields{
+					"url": url,
+				}).Info("[ReaderView] Cache hit")
 			}
 			results[i] = result
 		}(i, url)
@@ -77,15 +113,29 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(results); err != nil {
-		log.Errorf("[ReaderView] Failed to encode JSON: %v", err)
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[ReaderView] Failed to encode JSON")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
 
+/**
+ * @function getReaderView
+ * @description Retrieves the reader view of a given URL using the go-readability library.
+ *              It sets a timeout for the request and returns the parsed article or an error.
+ * @param {string} url The URL to retrieve the reader view for.
+ * @returns {readability.Article, error} The parsed article or an error.
+ * @dependencies readability.FromURL, log
+ */
 func getReaderView(url string) (readability.Article, error) {
 	article, err := readability.FromURL(url, 30*time.Second)
 	if err != nil {
-		log.Errorf("[ReaderView] Failed to parse %s: %v", url, err)
-		return readability.Article{}, err
+		log.WithFields(logrus.Fields{
+			"url":   url,
+			"error": err,
+		}).Error("[ReaderView] Failed to parse URL")
+		return readability.Article{}, fmt.Errorf("failed to parse URL: %w", err)
 	}
 	return article, nil
 }
@@ -278,6 +328,7 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 }
 
 //sqliteCache.go
+// Package digestsCache provides caching implementations.
 package digestsCache
 
 import (
@@ -305,6 +356,11 @@ func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
 		return nil, err
 	}
 
+	// Enable WAL mode for better performance
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		logrus.WithError(err).Error("Failed to enable WAL mode")
+	}
+
 	// Create the cache table if it doesn't exist
 	schema := `
 	CREATE TABLE IF NOT EXISTS cache (
@@ -312,6 +368,7 @@ func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
 		data TEXT NOT NULL,
 		expiration INTEGER NOT NULL
 	);
+	CREATE INDEX IF NOT EXISTS idx_expiration ON cache (expiration);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		logrus.WithField("error", err).Error("Failed to create cache table in SQLite")
@@ -340,6 +397,14 @@ func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expirati
 		expirationUnix = time.Now().AddDate(10, 0, 0).Unix()
 	}
 
+	// Use a transaction for better performance
+	tx, err := c.db.Begin()
+	if err != nil {
+		logrus.WithError(err).Error("Failed to begin transaction")
+		return err
+	}
+	defer tx.Rollback() // Rollback is safe to call even if the transaction was committed
+
 	stmt := `
 	INSERT INTO cache(id, data, expiration)
 	VALUES(?, ?, ?)
@@ -348,12 +413,17 @@ func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expirati
 		expiration=excluded.expiration;
 	`
 
-	_, err = c.db.Exec(stmt, fullKey, valBytes, expirationUnix)
+	_, err = tx.Exec(stmt, fullKey, valBytes, expirationUnix)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"key":   fullKey,
 			"error": err,
 		}).Error("Failed to set key in SQLite cache")
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		logrus.WithError(err).Error("Failed to commit transaction")
 		return err
 	}
 
@@ -367,11 +437,11 @@ func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 
 	stmt := `
 	SELECT data, expiration FROM cache
-	WHERE id = ?
+	WHERE id = ? AND expiration > ?
 	LIMIT 1;
 	`
 
-	row := c.db.QueryRow(stmt, fullKey)
+	row := c.db.QueryRow(stmt, fullKey, time.Now().Unix())
 
 	var (
 		data       []byte
@@ -379,23 +449,17 @@ func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 	)
 	err := row.Scan(&data, &expiration)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			logrus.WithFields(logrus.Fields{
+				"key": fullKey,
+			}).Debug("Key not found in SQLite cache")
+			return ErrCacheMiss
+		}
 		logrus.WithFields(logrus.Fields{
 			"key":   fullKey,
 			"error": err,
 		}).Error("Failed to read key from SQLite cache")
-		return ErrCacheMiss
-	}
-
-	// Check expiration
-	if time.Now().Unix() > expiration {
-		// Key is expired; remove it
-		deleteStmt := `DELETE FROM cache WHERE id = ?;`
-		_, _ = c.db.Exec(deleteStmt, fullKey)
-
-		logrus.WithFields(logrus.Fields{
-			"key": fullKey,
-		}).Info("Key expired in SQLite cache")
-		return ErrCacheMiss
+		return err
 	}
 
 	// Unmarshal data into dest
@@ -415,10 +479,10 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 	var urls []string
 
 	stmt := `
-	SELECT id, data, expiration FROM cache
-	WHERE id LIKE ?;
+	SELECT id, data FROM cache
+	WHERE id LIKE ? AND expiration > ?;
 	`
-	rows, err := c.db.Query(stmt, prefix+":%")
+	rows, err := c.db.Query(stmt, prefix+":%", time.Now().Unix())
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"error": err,
@@ -429,22 +493,13 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 
 	for rows.Next() {
 		var (
-			fullKey    string
-			data       []byte
-			expiration int64
+			fullKey string
+			data    []byte
 		)
-		if err := rows.Scan(&fullKey, &data, &expiration); err != nil {
+		if err := rows.Scan(&fullKey, &data); err != nil {
 			logrus.WithFields(logrus.Fields{
 				"error": err,
 			}).Error("Failed to scan SQLite cache row")
-			continue
-		}
-
-		// Check expiration
-		if time.Now().Unix() > expiration {
-			// Key is expired; remove it
-			deleteStmt := `DELETE FROM cache WHERE id = ?;`
-			_, _ = c.db.Exec(deleteStmt, fullKey)
 			continue
 		}
 
@@ -477,7 +532,7 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
 	var existingItems []FeedItem
 	err := c.Get(prefix, key, &existingItems)
-	if err != nil && !errors.Is(err, ErrCacheMiss) && !errors.Is(err, ErrCacheMiss) {
+	if err != nil && !errors.Is(err, ErrCacheMiss) && !errors.Is(err, ErrSQLCacheMiss) {
 		return err
 	}
 
@@ -513,6 +568,7 @@ func (c *SQLiteCache) Count() (int64, error) {
 }
 
 //redisCache.go
+// Package digestsCache provides caching implementations.
 package digestsCache
 
 import (
@@ -586,6 +642,12 @@ func (cache *RedisCache) Set(prefix string, key string, value interface{}, expir
 func (cache *RedisCache) Get(prefix string, key string, dest interface{}) error {
 	val, err := cache.handler.JSONGet(prefix+":"+key, ".")
 	if err != nil {
+		if err == redis.Nil {
+			log.WithFields(logrus.Fields{
+				"key": key,
+			}).Info("Key not found in Redis")
+			return ErrCacheMiss // Use the common ErrCacheMiss
+		}
 		log.WithFields(logrus.Fields{
 			"key": key,
 		}).Error("Failed to get key from Redis")
@@ -668,6 +730,7 @@ func (cache *RedisCache) Count() (int64, error) {
 }
 
 //goCache.go
+// Package digestsCache provides caching implementations.
 package digestsCache
 
 import (
@@ -783,6 +846,7 @@ func (c *GoCache) Count() (int64, error) {
 }
 
 //cacheInterface.go
+// Package digestsCache provides caching implementations.
 package digestsCache
 
 import "time"
@@ -797,6 +861,7 @@ type Cache interface {
 }
 
 //dataModel.go
+// Package models defines the data structures used in the application.
 package main
 
 import (
@@ -1038,6 +1103,40 @@ type WebMedia struct {
 	ReleaseDate string   `json:"release_date,omitempty"`
 }
 
+// Urls represents a list of URLs in a JSON payload.
+type Urls struct {
+	Urls []string `json:"urls"`
+}
+
+// FeedResult represents the result of discovering an RSS feed for a URL.
+type FeedResult struct {
+	URL      string `json:"url"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+	FeedLink string `json:"feedLink"`
+}
+
+// createShareRequest represents the expected JSON body for the /create endpoint.
+type createShareRequest struct {
+	Urls []string `json:"urls"`
+}
+
+// fetchShareRequest represents the expected JSON body for the /share endpoint.
+type fetchShareRequest struct {
+	Key string `json:"key"`
+}
+
+// URLValidationRequest represents the request format for URL validation
+type URLValidationRequest struct {
+	URLs []string `json:"urls"`
+}
+
+// URLStatus represents the status of a single URL validation
+type URLStatus struct {
+	URL    string `json:"url"`
+	Status string `json:"status"`
+}
+
 // CONSTANTS
 
 const redis_password = ""
@@ -1054,14 +1153,8 @@ const DefaultRed = uint8(128)
 const DefaultGreen = uint8(128)
 const DefaultBlue = uint8(128)
 
-// const thumbnailColorPrefix = "thumbnailColor_"
-
-// var colorComputeSemaphore = make(chan struct{}, numWorkers)
-
-// const redis_feedsItems_key = "feedsItems"
-// const redis_feedDetails_key = "feedDetails"
-
 //discover.go
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -1073,11 +1166,8 @@ import (
 	"sync"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/sirupsen/logrus"
 )
-
-type Urls struct {
-	Urls []string `json:"urls"`
-}
 
 var (
 	feedResultPool = &sync.Pool{
@@ -1087,11 +1177,30 @@ var (
 	}
 )
 
+/**
+ * @function discoverHandler
+ * @description Handles HTTP requests to the /discover endpoint.
+ *              It expects a POST request with a JSON body containing an array of URLs.
+ *              It attempts to discover the RSS feed URL for each provided URL and returns the results as JSON.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies discoverRssFeedUrl, generateGitHubRssUrl, generateRedditRssUrl, ensureAbsoluteUrl, httpClient, log
+ */
 func discoverHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[discoverHandler] Invalid method")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	var urls Urls
 	err := json.NewDecoder(r.Body).Decode(&urls)
 	if err != nil {
-		log.Printf("Error decoding request body: %v", err)
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[discoverHandler] Error decoding request body")
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -1124,13 +1233,16 @@ func discoverHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string][]FeedResult{"feeds": results})
 }
 
-type FeedResult struct {
-	URL      string `json:"url"`
-	Status   string `json:"status"`
-	Error    string `json:"error,omitempty"`
-	FeedLink string `json:"feedLink"`
-}
-
+/**
+ * @function discoverRssFeedUrl
+ * @description Attempts to discover the RSS feed URL for a given URL.
+ *              It first checks if the URL is a GitHub or Reddit URL and generates the feed URL accordingly.
+ *              Otherwise, it sends an HTTP GET request to the URL, parses the HTML response,
+ *              and searches for link elements with type="application/rss+xml".
+ * @param {string} urlStr The URL to discover the RSS feed for.
+ * @returns {string, error} The RSS feed URL if found, or an error if not found or an error occurred.
+ * @dependencies generateGitHubRssUrl, generateRedditRssUrl, ensureAbsoluteUrl, httpClient, goquery.NewDocumentFromReader, log
+ */
 func discoverRssFeedUrl(urlStr string) (string, error) {
 	if strings.HasPrefix(urlStr, "https://github.com") {
 		return generateGitHubRssUrl(urlStr), nil
@@ -1142,41 +1254,92 @@ func discoverRssFeedUrl(urlStr string) (string, error) {
 
 	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   urlStr,
+			"error": err,
+		}).Error("[discoverRssFeedUrl] Error creating request")
 		return "", err
 	}
 
+	// Set a custom User-Agent to avoid being blocked by some websites
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   urlStr,
+			"error": err,
+		}).Error("[discoverRssFeedUrl] Error sending request")
 		return "", err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		log.WithFields(logrus.Fields{
+			"url":        urlStr,
+			"statusCode": resp.StatusCode,
+		}).Error("[discoverRssFeedUrl] Request failed")
+		return "", errors.New("request failed")
+	}
+
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   urlStr,
+			"error": err,
+		}).Error("[discoverRssFeedUrl] Error parsing HTML")
 		return "", err
 	}
 
 	rssLink, exists := doc.Find(`link[type="application/rss+xml"]`).Attr("href")
 	if !exists {
+		log.WithFields(logrus.Fields{
+			"url": urlStr,
+		}).Warn("[discoverRssFeedUrl] RSS feed not found in HTML")
 		return "", errors.New("RSS feed not found")
 	}
 
 	rssLink, err = ensureAbsoluteUrl(urlStr, rssLink)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"url":     urlStr,
+			"rssLink": rssLink,
+			"error":   err,
+		}).Error("[discoverRssFeedUrl] Error ensuring absolute URL")
 		return "", err
 	}
 
 	return rssLink, nil
 }
 
+/**
+ * @function generateGitHubRssUrl
+ * @description Generates a GitHub RSS feed URL from a GitHub repository URL.
+ * @param {string} url The GitHub repository URL.
+ * @returns {string} The corresponding GitHub RSS feed URL.
+ */
 func generateGitHubRssUrl(url string) string {
 	return strings.TrimRight(url, "/") + "/commits/master.atom"
 }
 
+/**
+ * @function generateRedditRssUrl
+ * @description Generates a Reddit RSS feed URL from a Reddit URL.
+ * @param {string} url The Reddit URL.
+ * @returns {string} The corresponding Reddit RSS feed URL.
+ */
 func generateRedditRssUrl(url string) string {
 	return strings.TrimRight(url, "/") + "/.rss"
 }
 
+/**
+ * @function ensureAbsoluteUrl
+ * @description Ensures that a given URL is absolute. If the URL is relative, it resolves it against the base URL.
+ * @param {string} baseUrl The base URL to use for resolving relative URLs.
+ * @param {string} relativeOrAbsoluteUrl The URL to ensure is absolute.
+ * @returns {string, error} The absolute URL, or an error if the URL is invalid.
+ * @dependencies url.Parse, url.Parse
+ */
 func ensureAbsoluteUrl(baseUrl, relativeOrAbsoluteUrl string) (string, error) {
 	u, err := url.Parse(relativeOrAbsoluteUrl)
 	if err != nil || !u.IsAbs() {
@@ -1194,6 +1357,7 @@ func ensureAbsoluteUrl(baseUrl, relativeOrAbsoluteUrl string) (string, error) {
 }
 
 //search.go
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -1206,9 +1370,16 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
-// createRSSSearchResponse converts an array of FeedSearchAPIResponseItem to an array of FeedSearchResponseItem
+/**
+ * @function createRSSSearchResponse
+ * @description Converts an array of FeedSearchAPIResponseItem to an array of FeedSearchResponseItem.
+ * @param {[]FeedSearchAPIResponseItem} apiResults The array of FeedSearchAPIResponseItem to convert.
+ * @returns {[]FeedSearchResponseItem} The converted array of FeedSearchResponseItem.
+ */
 func createRSSSearchResponse(apiResults []FeedSearchAPIResponseItem) []FeedSearchResponseItem {
 	var responseItems []FeedSearchResponseItem
 	for _, item := range apiResults {
@@ -1231,6 +1402,12 @@ func createRSSSearchResponse(apiResults []FeedSearchAPIResponseItem) []FeedSearc
 	return responseItems
 }
 
+/**
+ * @function createPodcastSearchResponse
+ * @description Converts an array of PodcastAPIResponseItem to an array of PodcastSearchResponseItem.
+ * @param {[]PodcastAPIResponseItem} apiResults The array of PodcastAPIResponseItem to convert.
+ * @returns {[]PodcastSearchResponseItem} The converted array of PodcastSearchResponseItem.
+ */
 func createPodcastSearchResponse(apiResults []PodcastAPIResponseItem) []PodcastSearchResponseItem {
 	var responseItems []PodcastSearchResponseItem
 	for _, item := range apiResults {
@@ -1252,27 +1429,45 @@ func createPodcastSearchResponse(apiResults []PodcastAPIResponseItem) []PodcastS
 	return responseItems
 }
 
+/**
+ * @function searchRSS
+ * @description Searches for RSS feeds matching a given URL using an external API.
+ *              It caches the results for 24 hours.
+ * @param {string} queryURL The URL to search for.
+ * @returns {[]FeedSearchResponseItem} An array of FeedSearchResponseItem representing the search results.
+ * @dependencies createHash, cache, httpClient, log
+ */
 func searchRSS(queryURL string) []FeedSearchResponseItem {
 
-	log.Println("Search request received for URL: ", queryURL)
+	log.WithFields(logrus.Fields{
+		"queryURL": queryURL,
+	}).Info("[searchRSS] Search request received")
 	queryURLCacheKey := createHash(queryURL)
 
 	// Check the cache if the URL has been searched before
 	var cachedResults []FeedSearchResponseItem
 	if err := cache.Get(feedsearch_prefix, queryURLCacheKey, &cachedResults); err == nil {
-		log.Println("Cache hit for URL: ", queryURL)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+		}).Info("[searchRSS] Cache hit")
 		return cachedResults
 	} else {
-		log.Println("Cache miss for URL: ", queryURL)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+		}).Info("[searchRSS] Cache miss")
 	}
 
 	// Construct the external API URL
 	apiURL := "https://feedsearch.dev/api/v1/search?url=" + url.QueryEscape(queryURL)
 
 	// Make the request to the external API
-	resp, err := http.Get(apiURL)
+	resp, err := httpClient.Get(apiURL)
 	if err != nil {
-		log.Println("Error making request to external API: ", err)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+			"apiURL":   apiURL,
+			"error":    err,
+		}).Error("[searchRSS] Error making request to external API")
 		return nil
 	}
 	defer resp.Body.Close()
@@ -1280,7 +1475,11 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 	// Read the response from the external API
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Println("Error reading response from external API: ", err)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+			"apiURL":   apiURL,
+			"error":    err,
+		}).Error("[searchRSS] Error reading response from external API")
 		return nil
 	}
 
@@ -1288,7 +1487,11 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 	var searchResults []FeedSearchAPIResponseItem
 	err = json.Unmarshal(body, &searchResults)
 	if err != nil {
-		log.Println("Error unmarshalling response from external API: ", err)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+			"apiURL":   apiURL,
+			"error":    err,
+		}).Error("[searchRSS] Error unmarshalling response from external API")
 		return nil
 	}
 
@@ -1297,44 +1500,67 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 
 	// Cache the search results
 	if err := cache.Set(feedsearch_prefix, queryURLCacheKey, responseItems, 24*time.Hour); err != nil {
-		log.Printf("Failed to cache search results for URL %s: %v", queryURL, err)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+			"error":    err,
+		}).Error("[searchRSS] Failed to cache search results")
 	} else {
-		log.Printf("Successfully cached search results for URL %s", queryURL)
+		log.WithFields(logrus.Fields{
+			"queryURL": queryURL,
+		}).Info("[searchRSS] Successfully cached search results")
 	}
 
 	return responseItems
 }
-func calculateAuth(key, secret, datestr string) string {
 
+/**
+ * @function calculateAuth
+ * @description Calculates the authorization header for the Podcast Index API.
+ * @param {string} key The API key.
+ * @param {string} secret The API secret.
+ * @param {string} datestr The current date string in Unix timestamp format.
+ * @returns {string} The calculated authorization header.
+ * @dependencies sha1.New, hex.EncodeToString
+ */
+func calculateAuth(key, secret, datestr string) string {
 	h := sha1.New()
 	h.Write([]byte(key + secret + datestr))
-
-	log.Println("Hash Calculated as: ", h)
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+/**
+ * @function searchPodcast
+ * @description Searches for podcasts matching a given query using the Podcast Index API.
+ * @param {*http.Request} _ The HTTP request (not used in this function).
+ * @param {string} query The search query.
+ * @returns {[]PodcastSearchResponseItem} An array of PodcastSearchResponseItem representing the search results.
+ * @dependencies calculateAuth, httpClient, log
+ */
 func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
-	log.Println("Search request received for Podcast with query: ", query)
+	log.WithFields(logrus.Fields{
+		"query": query,
+	}).Info("[searchPodcast] Search request received")
 	key := os.Getenv("PODCAST_INDEX_API_KEY")
 	secret := os.Getenv("PODCAST_INDEX_API_SECRET")
 	baseURL := "https://api.podcastindex.org/api/1.0/"
 	apiURL := baseURL + "search/byterm?q=" + url.QueryEscape(query)
 
-	log.Println("API URL: ", apiURL)
-	log.Println("API Key: ", key)
-	log.Println("API Secret: ", secret)
-	log.Println("Request Headers: ", apiURL)
+	log.WithFields(logrus.Fields{
+		"apiURL": apiURL,
+	}).Debug("[searchPodcast] API URL")
 
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		log.Println("Error creating request: ", err)
+		log.WithFields(logrus.Fields{
+			"query":  query,
+			"apiURL": apiURL,
+			"error":  err,
+		}).Error("[searchPodcast] Error creating request")
 		return nil
 	}
 	now := strconv.FormatInt(time.Now().Unix(), 10)
 	authorization := calculateAuth(key, secret, now)
-	log.Println("Authorization: ", authorization)
-	log.Println("Date: ", now)
-	log.Println("User-Agent: MyPodcastApp")
 
 	req.Header.Set("User-Agent", "MyPodcastApp")
 	req.Header.Set("X-Auth-Key", key)
@@ -1344,22 +1570,34 @@ func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Println("Error making request to Podcast Index API: ", err)
+		log.WithFields(logrus.Fields{
+			"query":  query,
+			"apiURL": apiURL,
+			"error":  err,
+		}).Error("[searchPodcast] Error making request to Podcast Index API")
 		return nil
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Println("Error reading response from Podcast Index API: ", err)
+		log.WithFields(logrus.Fields{
+			"query":  query,
+			"apiURL": apiURL,
+			"error":  err,
+		}).Error("[searchPodcast] Error reading response from Podcast Index API")
 		return nil
 	}
 
 	var searchResults PodcastSearchAPIResponse
 	err = json.Unmarshal(body, &searchResults)
 	if err != nil {
-		log.Println("API Response: ", resp.Body)
-		log.Println("Error unmarshalling response from Podcast Index API: ", err)
+		log.WithFields(logrus.Fields{
+			"query":       query,
+			"apiURL":      apiURL,
+			"error":       err,
+			"apiResponse": string(body),
+		}).Error("[searchPodcast] Error unmarshalling response from Podcast Index API")
 		return nil
 	}
 
@@ -1367,13 +1605,24 @@ func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
 	return responseItems
 }
 
-// searchHandler handles the /search endpoint
+/**
+ * @function searchHandler
+ * @description Handles HTTP requests to the /search endpoint.
+ *              It supports searching for both RSS feeds and podcasts based on the 'type' query parameter.
+ *              It calls the appropriate search function (searchRSS or searchPodcast) and returns the results as JSON.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies searchRSS, searchPodcast, log
+ */
 func searchHandler(w http.ResponseWriter, r *http.Request) {
 	// Get the 'url' query parameter
 	searchType := r.URL.Query().Get("type")
-	if searchType == "rss" {
+	switch searchType {
+	case "rss":
 		queryURL := r.URL.Query().Get("q")
 		if queryURL == "" {
+			log.Warn("[searchHandler] No url provided for RSS search")
 			http.Error(w, "No url provided", http.StatusBadRequest)
 			response := map[string]string{
 				"status": "error",
@@ -1382,17 +1631,15 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 			return
-		} else {
-			var searchResults []FeedSearchResponseItem = searchRSS(queryURL)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(searchResults)
-			return
-
 		}
+		var searchResults []FeedSearchResponseItem = searchRSS(queryURL)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(searchResults)
 
-	} else if searchType == "podcast" {
+	case "podcast":
 		query := r.URL.Query().Get("q")
 		if query == "" {
+			log.Warn("[searchHandler] No query provided for podcast search")
 			http.Error(w, "No query provided", http.StatusBadRequest)
 			response := map[string]string{
 				"status": "error",
@@ -1401,14 +1648,15 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 			return
-		} else {
-			var searchResults []PodcastSearchResponseItem = searchPodcast(r, query)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(searchResults)
-			return
 		}
+		var searchResults []PodcastSearchResponseItem = searchPodcast(r, query)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(searchResults)
 
-	} else {
+	default:
+		log.WithFields(logrus.Fields{
+			"type": searchType,
+		}).Warn("[searchHandler] No or invalid type provided")
 		http.Error(w, "No or invalid type provided", http.StatusBadRequest)
 		response := map[string]string{
 			"status": "error",
@@ -1416,12 +1664,11 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
-		return
 	}
-
 }
 
 //share.go
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -1430,28 +1677,41 @@ import (
 	"time"
 
 	"math/rand"
+
+	"github.com/sirupsen/logrus"
 )
 
-//createShareHandler handles the /create endpoint
-
-type createShareRequest struct {
-	Urls []string `json:"urls"`
-}
-
-type fetchShareRequest struct {
-	Key string `json:"key"`
-}
-
+/**
+ * @function createShareHandler
+ * @description Handles HTTP requests to the /create endpoint.
+ *              It expects a POST request with a JSON body containing an array of URLs.
+ *              It generates a random 6-character key, stores the URLs in the cache with that key,
+ *              and returns a link to the /share endpoint with the generated key.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies cache, log, rand.Seed, rand.Intn
+ */
 func createShareHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[createShareHandler] Invalid method")
+		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
+		return
+	}
 	var req createShareRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[createShareHandler] Error decoding request body")
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		log.Error("Error decoding request body: ", err)
 		return
 	}
 
 	if len(req.Urls) == 0 {
+		log.Warn("[createShareHandler] No URLs provided")
 		http.Error(w, "No URLs provided", http.StatusBadRequest)
 		response := map[string]string{
 			"status": "error",
@@ -1462,7 +1722,9 @@ func createShareHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Info("Create request received for URLs: ", req.Urls)
+	log.WithFields(logrus.Fields{
+		"urls": req.Urls,
+	}).Info("[createShareHandler] Create request received")
 
 	// Generate a random key of maximum 6 characters
 	rand.Seed(time.Now().UnixNano())
@@ -1477,6 +1739,11 @@ func createShareHandler(w http.ResponseWriter, r *http.Request) {
 	// Save the URLs to the cache
 	err = cache.Set(cacheKey, "urls", req.Urls, 0) // setting exp 0 to keep it forever
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key":   cacheKey,
+			"urls":  req.Urls,
+			"error": err,
+		}).Error("[createShareHandler] Failed to save shared URLs")
 		http.Error(w, "Failed to save shared URLs", http.StatusInternalServerError)
 		return
 	}
@@ -1487,15 +1754,34 @@ func createShareHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+/**
+ * @function shareHandler
+ * @description Handles HTTP requests to the /share endpoint.
+ *              It expects a POST request with a JSON body containing a key.
+ *              It retrieves the URLs associated with that key from the cache and returns them as JSON.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies cache, log
+ */
 func shareHandler(w http.ResponseWriter, r *http.Request) {
-	log.Info("Share request received")
+	if r.Method != http.MethodPost {
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[shareHandler] Invalid method")
+		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
+		return
+	}
+	log.Info("[shareHandler] Share request received")
 
 	// Decode the request body
 	var req fetchShareRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[shareHandler] Error decoding request body")
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		log.Error("Error decoding request body: ", err)
 		return
 	}
 
@@ -1506,8 +1792,11 @@ func shareHandler(w http.ResponseWriter, r *http.Request) {
 	var urls []string
 	err = cache.Get(cacheKey, "urls", &urls)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"key":   cacheKey,
+			"error": err,
+		}).Error("[shareHandler] Error getting URLs from cache")
 		http.Error(w, "Invalid share link", http.StatusBadRequest)
-		log.Error("Error getting URLs from cache: ", err)
 		return
 	}
 
@@ -1515,24 +1804,30 @@ func shareHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(urls)
 
-	log.Info("Share request received for key: ", req.Key)
-	log.Info("Returning URLs: ", urls)
+	log.WithFields(logrus.Fields{
+		"key":  req.Key,
+		"urls": urls,
+	}).Info("[shareHandler] Share request processed")
 }
 
 //utils.go
-// utils.go
-
+// Package main provides the main functionality for the web server.
 package main
 
 import (
 	"encoding/json"
 	"net/http"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 // validateURLsHandler handles the /validate endpoint
 func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[validateURLsHandler] Invalid method")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1540,6 +1835,9 @@ func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 	var req URLValidationRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[validateURLsHandler] Error decoding request body")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1550,7 +1848,7 @@ func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(i int, url string) {
 			defer wg.Done()
-			resp, err := http.Get(url)
+			resp, err := httpClient.Get(url)
 			if resp != nil {
 				defer resp.Body.Close()
 			}
@@ -1560,6 +1858,16 @@ func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					status = http.StatusText(resp.StatusCode)
 				}
+				log.WithFields(logrus.Fields{
+					"url":    url,
+					"status": status,
+					"error":  err,
+				}).Warn("[validateURLsHandler] URL validation failed")
+			} else {
+				log.WithFields(logrus.Fields{
+					"url":    url,
+					"status": status,
+				}).Debug("[validateURLsHandler] URL validation successful")
 			}
 			statuses[i] = URLStatus{URL: url, Status: status}
 		}(i, url)
@@ -1570,22 +1878,15 @@ func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(statuses)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[validateURLsHandler] Error encoding response")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
-// URLValidationRequest represents the request format for URL validation
-type URLValidationRequest struct {
-	URLs []string `json:"urls"`
-}
-
-// URLStatus represents the status of a single URL validation
-type URLStatus struct {
-	URL    string `json:"url"`
-	Status string `json:"status"`
-}
-
 //ImageUtils.go
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -1607,6 +1908,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly"
 	"github.com/mmcdole/gofeed"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -1626,20 +1928,22 @@ func NewThumbnailFinder() *ThumbnailFinder {
 	return &ThumbnailFinder{}
 }
 
-// GetMetaData fetches a web page (targetURL) using Colly, extracting Open Graph tags
-// and JSON-LD data to produce a MetaDataResponseItem. It also attempts to discover
-// the favicon and domain if not provided by OG or JSON-LD.
-/*
- * Inputs:
- *   targetURL (string): The URL to visit and parse.
- *
- * Outputs:
- *   (MetaDataResponseItem, error): On success, returns a struct with combined
- *   metadata from both OG tags and JSON-LD. Returns an error if the fetch or parse fails.
+/**
+ * @function GetMetaData
+ * @description Fetches a web page (targetURL) using Colly, extracting Open Graph tags
+ * and JSON-LD data to produce a MetaDataResponseItem. It also attempts to discover
+ * the favicon and domain if not provided by OG or JSON-LD.
+ * @param {string} targetURL The URL to visit and parse.
+ * @returns {MetaDataResponseItem, error} On success, returns a struct with combined
+ * metadata from both OG tags and JSON-LD. Returns an error if the fetch or parse fails.
+ * @dependencies colly.NewCollector, colly.UserAgent, c.OnHTML, c.OnRequest, c.Visit, url.Parse, strconv.Atoi, json.Unmarshal, goquery.Selection, log
  */
 func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 	// Basic validation
 	if targetURL == "" || targetURL == "http://" || targetURL == "://" || targetURL == "about:blank" {
+		log.WithFields(logrus.Fields{
+			"url": targetURL,
+		}).Error("[GetMetaData] URL is empty or invalid")
 		return MetaDataResponseItem{}, fmt.Errorf("URL is empty or invalid")
 	}
 
@@ -1792,6 +2096,10 @@ func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 
 	// STEP 5: Visit the target page
 	if err := c.Visit(targetURL); err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   targetURL,
+			"error": err,
+		}).Error("[GetMetaData] Error visiting URL")
 		return MetaDataResponseItem{}, fmt.Errorf("error visiting URL %s: %w", targetURL, err)
 	}
 
@@ -1804,33 +2112,44 @@ func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
  *              It first checks the cache, then enclosures, then content, and finally fetches metadata.
  * @param {*gofeed.Item} item The feed item to find a thumbnail for.
  * @returns {string} The URL of the thumbnail, or an empty string if no thumbnail was found.
- * @dependencies extractThumbnailFromEnclosures, extractThumbnailFromContent, GetMetaData
+ * @dependencies extractThumbnailFromEnclosures, extractThumbnailFromContent, GetMetaData, log
  */
 func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 	if thumb, ok := tf.cache.Load(item.Link); ok {
-		log.Println("[FindThumbnailForItem] Found cached thumbnail for", item.Link)
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found cached thumbnail")
 		return thumb.(string)
 	}
 
 	thumbnail := tf.extractThumbnailFromEnclosures(item.Enclosures)
 	if thumbnail != "" {
-		log.Println("[FindThumbnailForItem] Found thumbnail in enclosures for", item.Link)
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found thumbnail in enclosures")
 		tf.cache.Store(item.Link, thumbnail)
 		return thumbnail
 	}
 
 	thumbnail = tf.extractThumbnailFromContent(item.Content)
 	if thumbnail != "" {
-		log.Println("[FindThumbnailForItem] Found thumbnail in content for", item.Link)
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found thumbnail in content")
 		tf.cache.Store(item.Link, thumbnail)
 		return thumbnail
 	}
 
 	if item.Link != "" {
-		log.Println("[FindThumbnailForItem] Fetching metadata for", item.Link)
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Fetching metadata")
 		metaData, err := GetMetaData(item.Link)
 		if err != nil {
-			log.Printf("Error getting metadata for %s: %v", item.Link, err)
+			log.WithFields(logrus.Fields{
+				"url":   item.Link,
+				"error": err,
+			}).Error("[FindThumbnailForItem] Error getting metadata")
 			return ""
 		}
 
@@ -1838,7 +2157,9 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 			thumbnail = metaData.Images[0].URL
 		}
 		if thumbnail != "" {
-			log.Println("[FindThumbnailForItem] Found thumbnail in metadata for", item.Link)
+			log.WithFields(logrus.Fields{
+				"url": item.Link,
+			}).Debug("[FindThumbnailForItem] Found thumbnail in metadata")
 			tf.cache.Store(item.Link, thumbnail)
 			return thumbnail
 		}
@@ -1868,12 +2189,14 @@ func (tf *ThumbnailFinder) extractThumbnailFromEnclosures(enclosures []*gofeed.E
  * @description Extracts a thumbnail URL from HTML content.
  * @param {string} content The HTML content to search.
  * @returns {string} The URL of the first image found in the content, or an empty string if none were found.
- * @dependencies goquery
+ * @dependencies goquery.NewDocumentFromReader, log
  */
 func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
 	if err != nil {
-		log.Printf("Error parsing content: %v", err)
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[extractThumbnailFromContent] Error parsing content")
 		return ""
 	}
 
@@ -1890,12 +2213,15 @@ func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
  *              and finally extracts the color using the K-means algorithm.
  * @param {string} imageURL The URL of the image to extract the color from.
  * @returns {r, g, b uint8} The red, green, and blue components of the prominent color.
- * @dependencies httpClient, cache, prominentcolor, image.Decode
+ * @dependencies httpClient, cache, prominentcolor, image.Decode, log
  */
 func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("Recovered from panic while processing URL %s: %v", imageURL, rec)
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"panic": rec,
+			}).Error("[extractColorFromThumbnail_prominentColor] Recovered from panic")
 			r, g, b = 128, 128, 128
 		}
 	}()
@@ -1910,14 +2236,20 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Attempt to retrieve the color from the cache
 	err := cache.Get(cachePrefix, imageURL, &cachedColor)
 	if err == nil {
-		log.Printf("[extractColorFromThumbnail_prominentColor] Found cached color for %s: %v", imageURL, cachedColor)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"color": cachedColor,
+		}).Debug("[extractColorFromThumbnail_prominentColor] Found cached color")
 		return cachedColor.R, cachedColor.G, cachedColor.B
 	}
 
 	// Validate the image URL
 	parsedURL, err := url.Parse(imageURL)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		log.Printf("Invalid image URL %s", imageURL)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Invalid image URL")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
@@ -1927,14 +2259,20 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
-		log.Printf("Error creating request for prominentColor: %v", err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Error creating request")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Printf("Failed to download image %s: %v", imageURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Failed to download image")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
@@ -1942,28 +2280,41 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
-		log.Printf("Failed to decode image %s: %v", imageURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Failed to decode image")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
-	log.Printf("Starting color extraction for %s", imageURL)
+	log.WithFields(logrus.Fields{
+		"url": imageURL,
+	}).Debug("[extractColorFromThumbnail_prominentColor] Starting color extraction")
 
 	bounds := img.Bounds()
 	imgNRGBA := image.NewNRGBA(bounds)
 	draw.Draw(imgNRGBA, bounds, img, bounds.Min, draw.Src)
 
 	if imgNRGBA == nil {
-		log.Printf("imgNRGBA is nil for URL %s", imageURL)
+		log.WithFields(logrus.Fields{
+			"url": imageURL,
+		}).Error("[extractColorFromThumbnail_prominentColor] imgNRGBA is nil")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
 
 	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
 	if err != nil || len(colors) == 0 {
-		log.Printf("Error extracting prominent color with background mask for %s: %v", imageURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color with background mask")
 		colors, err = prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, nil)
 		if err != nil || len(colors) == 0 {
-			log.Printf("Error extracting prominent color without background mask for %s: %v", imageURL, err)
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"error": err,
+			}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color without background mask")
 			cacheDefaultColor(imageURL)
 			return 128, 128, 128
 		}
@@ -1971,9 +2322,16 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	if len(colors) > 0 {
 		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
-		log.Printf("Extracted color for %s: %v", imageURL, extractedColor)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"color": extractedColor,
+		}).Debug("[extractColorFromThumbnail_prominentColor] Extracted color")
 		if err := cache.Set(cachePrefix, imageURL, extractedColor, 24*time.Hour); err != nil {
-			log.Printf("Failed to cache color for %s: %v", imageURL, err)
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"color": extractedColor,
+				"error": err,
+			}).Error("[extractColorFromThumbnail_prominentColor] Failed to cache color")
 		}
 		return extractedColor.R, extractedColor.G, extractedColor.B
 	}
@@ -1987,14 +2345,17 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
  * @function cacheDefaultColor
  * @description Caches the default color for a given image URL.
  * @param {string} imageURL The URL of the image to cache the default color for.
- * @dependencies cache
+ * @dependencies cache, log
  */
 func cacheDefaultColor(imageURL string) {
 	cachePrefix := thumbnailColorPrefix
 	defaultColor := RGBColor{defaultColor, defaultColor, defaultColor}
 
 	if err := cache.Set(cachePrefix, imageURL, defaultColor, cacheDuration); err != nil {
-		log.Printf("[cacheDefaultColor] Failed to cache default color for %s: %v", imageURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[cacheDefaultColor] Failed to cache default color")
 	}
 }
 
@@ -2005,7 +2366,7 @@ func cacheDefaultColor(imageURL string) {
  *              and searches for link elements with rel attributes containing "icon", "shortcut", or "apple-touch-icon".
  * @param {string} pageURL The URL of the page to discover the favicon for.
  * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
- * @dependencies httpClient
+ * @dependencies httpClient, html.Parse, findFavicon, url.Parse, log
  */
 func DiscoverFavicon(pageURL string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
@@ -2013,7 +2374,10 @@ func DiscoverFavicon(pageURL string) string {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
-		log.Printf("Error creating request for favicon discovery: %v", err)
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error creating request")
 		return ""
 	}
 
@@ -2021,19 +2385,28 @@ func DiscoverFavicon(pageURL string) string {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Printf("Error fetching page for favicon: %v", err)
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error fetching page")
 		return ""
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("Error fetching page %s for favicon: %s", pageURL, resp.Status)
+		log.WithFields(logrus.Fields{
+			"url":    pageURL,
+			"status": resp.Status,
+		}).Error("[DiscoverFavicon] Error fetching page")
 		return ""
 	}
 
 	doc, err := html.Parse(resp.Body)
 	if err != nil {
-		log.Printf("Error parsing HTML for favicon: %v", err)
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error parsing HTML")
 		return ""
 	}
 
@@ -2093,6 +2466,7 @@ func findFavicon(n *html.Node) string {
  * @param {*colly.Collector} c The colly collector to use for the request.
  * @param {string} pageURL The URL of the page to discover the favicon for.
  * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ * @dependencies colly.HTMLElement, c.OnHTML, c.Visit
  */
 func DiscoverFaviconWithColly(c *colly.Collector, pageURL string) string {
 	var favicon string
@@ -2118,6 +2492,7 @@ func DiscoverFaviconWithColly(c *colly.Collector, pageURL string) string {
 }
 
 //parser.go
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -2142,19 +2517,33 @@ import (
 // The date/time layout format used throughout the code.
 const layout = "2006-01-02T15:04:05Z07:00"
 
-// createHash returns a SHA-256 hash of the given string s.
+/**
+ * @function createHash
+ * @description Returns a SHA-256 hash of the given string s.
+ * @param {string} s The string to hash.
+ * @returns {string} The SHA-256 hash of the string.
+ */
 func createHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
 
-// parseHTMLContent attempts to parse htmlContent as HTML,
-// extracting and returning only the text content. If parsing fails,
-// the original htmlContent is returned unchanged.
+/**
+ * @function parseHTMLContent
+ * @description Attempts to parse htmlContent as HTML,
+ * extracting and returning only the text content. If parsing fails,
+ * the original htmlContent is returned unchanged.
+ * @param {string} htmlContent The HTML content to parse.
+ * @returns {string} The extracted text content, or the original htmlContent if parsing fails.
+ * @dependencies html.Parse, log
+ */
 func parseHTMLContent(htmlContent string) string {
 	doc, err := html.Parse(strings.NewReader(htmlContent))
 	if err != nil {
 		// Fallback to the raw HTML if parse fails
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Warn("[parseHTMLContent] Failed to parse HTML content")
 		return htmlContent
 	}
 	var f func(*html.Node)
@@ -2172,20 +2561,41 @@ func parseHTMLContent(htmlContent string) string {
 	return textContent.String()
 }
 
-// getBaseDomain attempts to parse rawURL and returns its scheme + hostname (e.g., https://example.com).
-// If parsing fails, an empty string is returned.
+/**
+ * @function getBaseDomain
+ * @description Attempts to parse rawURL and returns its scheme + hostname (e.g., https://example.com).
+ *              If parsing fails, an empty string is returned.
+ * @param {string} rawURL The URL to parse.
+ * @returns {string} The base domain (scheme + hostname) of the URL, or an empty string if parsing fails.
+ * @dependencies url.Parse, log
+ */
 func getBaseDomain(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		log.Printf("[getBaseDomain] Failed to parse URL %s: %v", rawURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   rawURL,
+			"error": err,
+		}).Warn("[getBaseDomain] Failed to parse URL")
 		return ""
 	}
 	return parsedURL.Scheme + "://" + parsedURL.Host
 }
 
-// Metadata handler
+/**
+ * @function metadataHandler
+ * @description Handles HTTP requests to the /metadata endpoint.
+ *              It expects a POST request with a JSON body containing an array of URLs.
+ *              It fetches metadata for each URL using GetMetaData and returns the results as JSON.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies GetMetaData, log
+ */
 func metadataHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[metadataHandler] Invalid method")
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -2193,6 +2603,9 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 	var urls Urls
 	err := json.NewDecoder(r.Body).Decode(&urls)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[metadataHandler] Error decoding request body")
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -2204,9 +2617,15 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(i int, url string) {
 			defer wg.Done()
+			log.WithFields(logrus.Fields{
+				"url": url,
+			}).Debug("[metadataHandler] Fetching metadata")
 			result, err := GetMetaData(url)
 			if err != nil {
-				log.Printf("Error fetching metadata for URL %s: %v", url, err)
+				log.WithFields(logrus.Fields{
+					"url":   url,
+					"error": err,
+				}).Error("[metadataHandler] Error fetching metadata")
 			} else {
 				results[i] = result
 			}
@@ -2219,11 +2638,22 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string][]MetaDataResponseItem{"metadata": results})
 }
 
-// parseHandler is an HTTP handler for the /parse endpoint,
-// expecting a POST request with a JSON body of feed URLs to parse,
-// plus optional pagination parameters (Page, ItemsPerPage).
+/**
+ * @function parseHandler
+ * @description Handles HTTP requests to the /parse endpoint.
+ *              It expects a POST request with a JSON body containing an array of feed URLs to parse,
+ *              along with optional pagination parameters (Page, ItemsPerPage).
+ *              It processes each feed URL, applies pagination, and returns the results as JSON.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies decodeRequest, processURLs, sendResponse, log
+ */
 func parseHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[parseHandler] Invalid method")
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -2235,6 +2665,9 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 	// Decode request into ParseRequest
 	req, err := decodeRequest(r)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[parseHandler] Error decoding request body")
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -2252,15 +2685,28 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 	sendResponse(w, responses)
 }
 
-// decodeRequest reads and unmarshals the request body into a ParseRequest object.
+/**
+ * @function decodeRequest
+ * @description Reads and unmarshals the request body into a ParseRequest object.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {ParseRequest, error} The parsed ParseRequest object, or an error if unmarshalling fails.
+ */
 func decodeRequest(r *http.Request) (ParseRequest, error) {
 	var req ParseRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	return req, err
 }
 
-// processURLs concurrently processes each feed URL using processURL,
-// returns all feed responses (with pagination applied) as a slice.
+/**
+ * @function processURLs
+ * @description Concurrently processes each feed URL using processURL.
+ *              Returns all feed responses (with pagination applied) as a slice.
+ * @param {[]string} urls The list of feed URLs to process.
+ * @param {int} page The page number for pagination.
+ * @param {int} itemsPerPage The number of items per page for pagination.
+ * @returns {[]FeedResponse} A slice of FeedResponse objects, with pagination applied.
+ * @dependencies processURL, numWorkers, log
+ */
 func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, numWorkers)
@@ -2274,6 +2720,9 @@ func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 				wg.Done()
 				<-sem
 			}()
+			log.WithFields(logrus.Fields{
+				"url": feedURL,
+			}).Debug("[processURLs] Processing feed")
 			response := processURL(feedURL, page, itemsPerPage)
 			responses <- response
 		}(url)
@@ -2287,23 +2736,43 @@ func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 	return collectResponses(responses)
 }
 
-// isCacheStale checks whether lastRefreshed is older than refresh_timer (in minutes).
+/**
+ * @function isCacheStale
+ * @description Checks whether lastRefreshed is older than refresh_timer (in minutes).
+ * @param {string} lastRefreshed The timestamp of the last refresh, in the format defined by the 'layout' constant.
+ * @returns {bool} True if the cache is stale, false otherwise.
+ * @dependencies refresh_timer, time.Parse, time.Since, log
+ */
 func isCacheStale(lastRefreshed string) bool {
 	parsedTime, err := time.Parse(layout, lastRefreshed)
 	if err != nil {
-		log.Printf("[isCacheStale] Failed to parse LastRefreshed: %v", err)
+		log.WithFields(logrus.Fields{
+			"lastRefreshed": lastRefreshed,
+			"error":         err,
+		}).Error("[isCacheStale] Failed to parse LastRefreshed")
 		return false
 	}
 
 	if time.Since(parsedTime) > time.Duration(refresh_timer)*time.Minute {
-		log.Printf("[isCacheStale] Cache is stale (older than %d minutes)", refresh_timer)
+		log.WithFields(logrus.Fields{
+			"lastRefreshed": lastRefreshed,
+			"refresh_timer": refresh_timer,
+		}).Info("[isCacheStale] Cache is stale")
 		return true
 	}
 	return false
 }
 
-// fetchAndCacheFeed fetches the remote feed from feedURL, merges with existing items (if any),
-// and caches the final FeedResponse. Returns the FeedResponse or an error if any step fails.
+/**
+ * @function fetchAndCacheFeed
+ * @description Fetches the remote feed from feedURL, merges with existing items (if any),
+ *              and caches the final FeedResponse. Returns the FeedResponse or an error if any step fails.
+ * @param {string} feedURL The URL of the feed to fetch.
+ * @param {string} cacheKey The key to use for caching the feed.
+ * @returns {FeedResponse, error} The fetched and processed FeedResponse, or an error if any step fails.
+ * @dependencies gofeed.NewParser, processFeedItems, mergeFeedItemsAtParserLevel, getBaseDomain, addURLToList,
+ *               cache, GetMetaData, createFeedResponse, log
+ */
 func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 	parser := gofeed.NewParser()
 	feed, err := parser.ParseURL(feedURL)
@@ -2321,6 +2790,10 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 	// Merge new items with existing items from the last 24 hours.
 	mergedItems, mergeErr := mergeFeedItemsAtParserLevel(feedURL, newItems)
 	if mergeErr != nil {
+		log.WithFields(logrus.Fields{
+			"url":   feedURL,
+			"error": mergeErr,
+		}).Error("[fetchAndCacheFeed] Failed to merge feed items")
 		return FeedResponse{}, mergeErr
 	}
 
@@ -2338,19 +2811,29 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 		if isValidURL(baseDomain) {
 			tempMeta, errGet := GetMetaData(baseDomain)
 			if errGet != nil {
-				log.Printf("[fetchAndCacheFeed] Failed to get metadata for %s: %v", baseDomain, errGet)
+				log.WithFields(logrus.Fields{
+					"baseDomain": baseDomain,
+					"error":      errGet,
+				}).Warn("[fetchAndCacheFeed] Failed to get metadata")
 			} else {
 				metaData = tempMeta
 				if errSet := cache.Set(metaData_prefix, baseDomainKey, metaData, 24*time.Hour); errSet != nil {
-					log.Printf("[fetchAndCacheFeed] Failed to cache metadata for %s: %v", baseDomain, errSet)
+					log.WithFields(logrus.Fields{
+						"baseDomain": baseDomain,
+						"error":      errSet,
+					}).Error("[fetchAndCacheFeed] Failed to cache metadata")
 				}
 			}
 		} else {
 			metaData = MetaDataResponseItem{}
-			log.Printf("[fetchAndCacheFeed] Invalid baseDomain %s", baseDomain)
+			log.WithFields(logrus.Fields{
+				"baseDomain": baseDomain,
+			}).Warn("[fetchAndCacheFeed] Invalid baseDomain")
 		}
 	} else {
-		log.Printf("[fetchAndCacheFeed] Loaded metadata from cache for %s", baseDomain)
+		log.WithFields(logrus.Fields{
+			"baseDomain": baseDomain,
+		}).Debug("[fetchAndCacheFeed] Loaded metadata from cache")
 	}
 
 	// Build final FeedResponse from the merged items
@@ -2358,18 +2841,31 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 
 	// Cache the final feed response
 	if err := cache.Set(feed_prefix, cacheKey, finalFeedResponse, 24*time.Hour); err != nil {
-		log.WithFields(logrus.Fields{"url": feedURL, "error": err}).
-			Error("[fetchAndCacheFeed] Failed to cache feed details")
+		log.WithFields(logrus.Fields{
+			"url":   feedURL,
+			"error": err,
+		}).Error("[fetchAndCacheFeed] Failed to cache feed details")
 		return FeedResponse{}, err
 	}
 
-	log.Infof("[fetchAndCacheFeed] Successfully cached feed details for %s", feedURL)
+	log.WithFields(logrus.Fields{
+		"url": feedURL,
+	}).Info("[fetchAndCacheFeed] Successfully cached feed details")
 	return finalFeedResponse, nil
 }
 
-// processURL checks the cache for a feed URL; if found and not stale, returns the cached feed.
-// Otherwise, calls fetchAndCacheFeed to retrieve and cache a fresh feed. Pagination is then applied
-// to the final list of items before returning.
+/**
+ * @function processURL
+ * @description Checks the cache for a feed URL; if found and not stale, returns the cached feed.
+ *              Otherwise, calls fetchAndCacheFeed to retrieve and cache a fresh feed. Pagination is then applied
+ *              to the final list of items before returning.
+ * @param {string} rawURL The raw URL of the feed to process.
+ * @param {int} page The page number for pagination.
+ * @param {int} itemsPerPage The number of items per page for pagination.
+ * @returns {FeedResponse} The processed FeedResponse, with pagination applied.
+ * @dependencies sanitizeURL, cache, isCacheStale, fetchAndCacheFeed, updateFeedItemsWithThumbnailColors,
+ *               applyPagination, log
+ */
 func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 	feedURL := sanitizeURL(rawURL)
 	cacheKey := feedURL
@@ -2378,13 +2874,15 @@ func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 	// Try retrieving from cache first
 	if err := cache.Get(feed_prefix, cacheKey, &cachedFeed); err == nil && cachedFeed.SiteTitle != "" {
 		// Cache hit
-		log.WithFields(logrus.Fields{"url": feedURL}).
-			Info("[processURL] [Cache Hit] Using cached feed details")
+		log.WithFields(logrus.Fields{
+			"url": feedURL,
+		}).Info("[processURL] [Cache Hit] Using cached feed details")
 
 		// Check staleness
 		if isCacheStale(cachedFeed.LastRefreshed) {
-			log.WithFields(logrus.Fields{"url": feedURL}).
-				Info("[processURL] Cache is stale, refreshing in background")
+			log.WithFields(logrus.Fields{
+				"url": feedURL,
+			}).Info("[processURL] Cache is stale, refreshing in background")
 			go func() {
 				if _, errRefresh := fetchAndCacheFeed(feedURL, cacheKey); errRefresh != nil {
 					log.WithFields(logrus.Fields{
@@ -2407,13 +2905,16 @@ func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 	}
 
 	// Cache miss or empty feed
-	log.WithFields(logrus.Fields{"url": feedURL}).
-		Info("[processURL] [Cache Miss] Fetching fresh feed")
+	log.WithFields(logrus.Fields{
+		"url": feedURL,
+	}).Info("[processURL] [Cache Miss] Fetching fresh feed")
 
 	newResp, errNew := fetchAndCacheFeed(feedURL, cacheKey)
 	if errNew != nil {
-		log.WithFields(logrus.Fields{"url": feedURL, "error": errNew}).
-			Error("[processURL] Failed to fetch and cache feed")
+		log.WithFields(logrus.Fields{
+			"url":   feedURL,
+			"error": errNew,
+		}).Error("[processURL] Failed to fetch and cache feed")
 
 		return FeedResponse{
 			Type:    "unknown",
@@ -2434,8 +2935,15 @@ func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 	return newResp
 }
 
-// applyPagination modifies the feed items in place, slicing to the requested page and itemsPerPage
-// (e.g. page=2, itemsPerPage=10 => skip first 10 items, return next 10).
+/**
+ * @function applyPagination
+ * @description Modifies the feed items in place, slicing to the requested page and itemsPerPage
+ *              (e.g. page=2, itemsPerPage=10 => skip first 10 items, return next 10).
+ * @param {*[]FeedResponseItem} items A pointer to a slice of FeedResponseItem objects.
+ * @param {int} page The page number to retrieve.
+ * @param {int} itemsPerPage The number of items per page.
+ * @returns {void}
+ */
 func applyPagination(items *[]FeedResponseItem, page, itemsPerPage int) {
 	if items == nil || len(*items) == 0 {
 		return
@@ -2464,8 +2972,14 @@ func applyPagination(items *[]FeedResponseItem, page, itemsPerPage int) {
 	*items = (*items)[start:end]
 }
 
-// updateFeedItemsWithThumbnailColors iterates over existing items in a feed,
-// calling updateThumbnailColorForItem to finalize or skip color checks.
+/**
+ * @function updateFeedItemsWithThumbnailColors
+ * @description Iterates over existing items in a feed,
+ *              calling updateThumbnailColorForItem to finalize or skip color checks.
+ * @param {*[]FeedResponseItem} items A pointer to a slice of FeedResponseItem objects.
+ * @returns {[]FeedResponseItem} A new slice of FeedResponseItem objects with updated thumbnail colors.
+ * @dependencies updateThumbnailColorForItem
+ */
 func updateFeedItemsWithThumbnailColors(items *[]FeedResponseItem) []FeedResponseItem {
 	if items == nil {
 		return nil
@@ -2478,26 +2992,40 @@ func updateFeedItemsWithThumbnailColors(items *[]FeedResponseItem) []FeedRespons
 	return updatedItems
 }
 
-// updateThumbnailColorForItem checks if we have a cached color for the item’s thumbnail.
-// If so, sets item.ThumbnailColor. Otherwise, logs that color is not yet available.
+/**
+ * @function updateThumbnailColorForItem
+ * @description Checks if we have a cached color for the item’s thumbnail.
+ *              If so, sets item.ThumbnailColor. Otherwise, logs that color is not yet available.
+ * @param {FeedResponseItem} item The FeedResponseItem to update.
+ * @returns {FeedResponseItem} The updated FeedResponseItem.
+ * @dependencies cache, log
+ */
 func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 	var cachedColor RGBColor
-	err := cache.Get(thumbnailColorPrefix, item.Thumbnail, &cachedColor)
+	err := cache.Get(thumbnailColor_prefix, item.Thumbnail, &cachedColor)
 
 	switch {
 	case err != nil:
-		log.Printf("[updateThumbnailColorForItem] No cached color for %s yet", item.Thumbnail)
+		log.WithFields(logrus.Fields{
+			"thumbnail": item.Thumbnail,
+		}).Debug("[updateThumbnailColorForItem] No cached color")
 	case item.ThumbnailColorComputed == "set":
 		// Already set
 	case item.ThumbnailColorComputed == "computed":
 		item.ThumbnailColor = cachedColor
 		item.ThumbnailColorComputed = "set"
-		log.Printf("[updateThumbnailColorForItem] Updated color for %s: %v", item.Thumbnail, item.ThumbnailColor)
+		log.WithFields(logrus.Fields{
+			"thumbnail": item.Thumbnail,
+			"color":     item.ThumbnailColor,
+		}).Debug("[updateThumbnailColorForItem] Updated color")
 	case item.ThumbnailColorComputed == "no":
 		if cachedColor != (RGBColor{}) {
 			item.ThumbnailColor = cachedColor
 			item.ThumbnailColorComputed = "set"
-			log.Printf("[updateThumbnailColorForItem] Updated color for %s: %v", item.Thumbnail, item.ThumbnailColor)
+			log.WithFields(logrus.Fields{
+				"thumbnail": item.Thumbnail,
+				"color":     item.ThumbnailColor,
+			}).Debug("[updateThumbnailColorForItem] Updated color")
 		}
 	default:
 		// No additional logic
@@ -2505,7 +3033,13 @@ func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 	return item
 }
 
-// processFeedItems validates feed, concurrency processes each item, returning a slice of FeedResponseItem.
+/**
+ * @function processFeedItems
+ * @description Validates feed, concurrency processes each item, returning a slice of FeedResponseItem.
+ * @param {*gofeed.Feed} feed The parsed feed to process.
+ * @returns {[]FeedResponseItem} A slice of processed FeedResponseItem objects.
+ * @dependencies processFeedItem, extractColorFromThumbnail_prominentColor, log
+ */
 func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 	// Safeguard feed == nil or feed.Items is nil/empty
 	if feed == nil {
@@ -2513,7 +3047,9 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 		return nil
 	}
 	if len(feed.Items) == 0 {
-		log.Warnf("[processFeedItems] feed.Items is empty for feed: %q", feed.Title)
+		log.WithFields(logrus.Fields{
+			"feedTitle": feed.Title,
+		}).Warn("[processFeedItems] feed.Items is empty")
 		return nil
 	}
 
@@ -2555,8 +3091,17 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 	return collectItemResponses(itemResponses)
 }
 
-// processFeedItem creates a FeedResponseItem from a single gofeed.Item,
-// attempting to discover a thumbnail if not set, and sets a default or cached color.
+/**
+ * @function processFeedItem
+ * @description Creates a FeedResponseItem from a single gofeed.Item,
+ *              attempting to discover a thumbnail if not set, and sets a default or cached color.
+ * @param {*gofeed.Item} item The gofeed.Item to process.
+ * @param {string} thumbnail The default thumbnail URL for the feed.
+ * @param {RGBColor} thumbnailColor The default thumbnail color for the feed.
+ * @returns {FeedResponseItem} The processed FeedResponseItem.
+ * @dependencies getItemAuthor, NewThumbnailFinder, FindThumbnailForItem, extractColorFromThumbnail_prominentColor,
+ *               parseHTMLContent, standardizeDate, determineItemTypeAndDuration, createHash, cache, log
+ */
 func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColor) FeedResponseItem {
 	author := getItemAuthor(item)
 	categories := strings.Join(item.Categories, ", ")
@@ -2604,7 +3149,11 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 			r, g, b := extractColorFromThumbnail_prominentColor(thURL)
 			actualColor := RGBColor{r, g, b}
 			if cErr := cache.Set(thumbnailColor_prefix, thURL, actualColor, 24*time.Hour); cErr != nil {
-				log.Printf("[processFeedItem] Failed to cache color for %s: %v", thURL, cErr)
+				log.WithFields(logrus.Fields{
+					"thumbnail": thURL,
+					"color":     actualColor,
+					"error":     cErr,
+				}).Error("[processFeedItem] Failed to cache color")
 			}
 		}(thumbnail)
 	}
@@ -2641,8 +3190,14 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 	}
 }
 
-// standardizeDate parses dateStr in various known formats (RFC3339, RFC1123, etc.).
-// Returns the date in a standard layout or empty if parse fails.
+/**
+ * @function standardizeDate
+ * @description Parses dateStr in various known formats (RFC3339, RFC1123, etc.).
+ *              Returns the date in a standard layout or empty if parse fails.
+ * @param {string} dateStr The date string to parse.
+ * @returns {string} The standardized date string, or an empty string if parsing fails.
+ * @dependencies time.Parse, time.RFC1123, time.RFC1123Z, time.RFC3339, time.RFC822, time.RFC850, time.ANSIC, log
+ */
 func standardizeDate(dateStr string) string {
 	if dateStr == "" {
 		log.Info("[standardizeDate] Empty date string")
@@ -2663,14 +3218,27 @@ func standardizeDate(dateStr string) string {
 			return parsedTime.Format(outputLayout)
 		}
 	}
-	log.Infof("[standardizeDate] Failed to parse date: %v", dateStr)
+	log.WithFields(logrus.Fields{
+		"date": dateStr,
+	}).Info("[standardizeDate] Failed to parse date")
 	return ""
 }
 
-// createFeedResponse builds a FeedResponse struct from a parsed feed object, feed metadata, and items.
+/**
+ * @function createFeedResponse
+ * @description Builds a FeedResponse struct from a parsed feed object, feed metadata, and items.
+ * @param {*gofeed.Feed} feed The parsed feed.
+ * @param {string} feedURL The URL of the feed.
+ * @param {MetaDataResponseItem} metaData The metadata for the feed.
+ * @param {[]FeedResponseItem} feedItems The processed feed items.
+ * @returns {FeedResponse} The constructed FeedResponse object.
+ * @dependencies createHash, log
+ */
 func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
 	if feed == nil {
-		log.Errorf("[createFeedResponse] feed is nil for %s", feedURL)
+		log.WithFields(logrus.Fields{
+			"url": feedURL,
+		}).Error("[createFeedResponse] feed is nil")
 		return FeedResponse{}
 	}
 
@@ -2714,7 +3282,12 @@ func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResp
 	}
 }
 
-// collectResponses reads FeedResponse objects from a channel, returning them as a slice.
+/**
+ * @function collectResponses
+ * @description Reads FeedResponse objects from a channel, returning them as a slice.
+ * @param {chan FeedResponse} responses The channel to read from.
+ * @returns {[]FeedResponse} A slice of FeedResponse objects.
+ */
 func collectResponses(responses chan FeedResponse) []FeedResponse {
 	var all []FeedResponse
 	for resp := range responses {
@@ -2723,8 +3296,14 @@ func collectResponses(responses chan FeedResponse) []FeedResponse {
 	return all
 }
 
-// collectItemResponses reads FeedResponseItem objects from a channel, returning them as a slice.
-// The items are then sorted by descending Published date.
+/**
+ * @function collectItemResponses
+ * @description Reads FeedResponseItem objects from a channel, returning them as a slice.
+ *              The items are then sorted by descending Published date.
+ * @param {chan FeedResponseItem} itemResponses The channel to read from.
+ * @returns {[]FeedResponseItem} A slice of FeedResponseItem objects, sorted by descending Published date.
+ * @dependencies time.Parse, log
+ */
 func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseItem {
 	var feedItems []FeedResponseItem
 	for itemResponse := range itemResponses {
@@ -2734,12 +3313,18 @@ func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseIte
 	sort.Slice(feedItems, func(i, j int) bool {
 		timeI, errI := time.Parse(layout, feedItems[i].Published)
 		if errI != nil {
-			log.Printf("[collectItemResponses] Failed to parse time for item I: %v", errI)
+			log.WithFields(logrus.Fields{
+				"item":  feedItems[i],
+				"error": errI,
+			}).Error("[collectItemResponses] Failed to parse time for item I")
 			return false
 		}
 		timeJ, errJ := time.Parse(layout, feedItems[j].Published)
 		if errJ != nil {
-			log.Printf("[collectItemResponses] Failed to parse time for item J: %v", errJ)
+			log.WithFields(logrus.Fields{
+				"item":  feedItems[j],
+				"error": errJ,
+			}).Error("[collectItemResponses] Failed to parse time for item J")
 			return true
 		}
 		return timeI.After(timeJ)
@@ -2747,28 +3332,47 @@ func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseIte
 	return feedItems
 }
 
-// sendResponse writes a JSON-encoded Feeds struct to the ResponseWriter.
+/**
+ * @function sendResponse
+ * @description Writes a JSON-encoded Feeds struct to the ResponseWriter.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {[]FeedResponse} responses The FeedResponse objects to encode and send.
+ * @dependencies json.NewEncoder, log
+ */
 func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 
 	feeds := Feeds{Feeds: responses}
 	if err := enc.Encode(feeds); err != nil {
-		log.Errorf("[sendResponse] Failed to encode feed responses: %v", err)
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[sendResponse] Failed to encode feed responses")
 	}
 }
 
-// refreshFeeds retrieves all known feed URLs from the cache and re-processes them
-// (useful for cron-based or ticker-based refreshing).
+/**
+ * @function refreshFeeds
+ * @description Retrieves all known feed URLs from the cache and re-processes them
+ *              (useful for cron-based or ticker-based refreshing).
+ * @dependencies getAllCachedURLs, processURL, log
+ */
 func refreshFeeds() {
 	urls := getAllCachedURLs()
 	for _, url := range urls {
-		log.Printf("[refreshFeeds] Refreshing feed for URL: %s", url)
+		log.WithFields(logrus.Fields{
+			"url": url,
+		}).Info("[refreshFeeds] Refreshing feed")
 		_ = processURL(url, 1, 20) // or any default paging
 	}
 }
 
-// addURLToList ensures the feed URL is tracked in urlList (the list of subscribed or known feeds).
+/**
+ * @function addURLToList
+ * @description Ensures the feed URL is tracked in urlList (the list of subscribed or known feeds).
+ * @param {string} url The URL to add to the list.
+ * @dependencies urlListMutex, stringInSlice
+ */
 func addURLToList(url string) {
 	urlListMutex.Lock()
 	defer urlListMutex.Unlock()
@@ -2778,8 +3382,13 @@ func addURLToList(url string) {
 	}
 }
 
-// getAllCachedURLs returns all known feed URLs from the cache or from an in-memory list.
-// If none are found, returns an empty slice.
+/**
+ * @function getAllCachedURLs
+ * @description Returns all known feed URLs from the cache or from an in-memory list.
+ *              If none are found, returns an empty slice.
+ * @returns {[]string} A slice of known feed URLs.
+ * @dependencies urlListMutex, cache.GetSubscribedListsFromCache, log
+ */
 func getAllCachedURLs() []string {
 	urlListMutex.Lock()
 	defer urlListMutex.Unlock()
@@ -2790,23 +3399,37 @@ func getAllCachedURLs() []string {
 		var err error
 		urlList, err = cache.GetSubscribedListsFromCache(feed_prefix)
 		if err != nil {
-			log.Warnf("[getAllCachedURLs] Failed to get subscribed feeds from cache: %v", err)
+			log.WithFields(logrus.Fields{
+				"error": err,
+			}).Warn("[getAllCachedURLs] Failed to get subscribed feeds from cache")
 			return nil
 		}
 
 		duration := time.Since(startTime)
-		log.Infof("[getAllCachedURLs] Loaded urlList from cache: %v, took %v", urlList, duration)
+		log.WithFields(logrus.Fields{
+			"urlList":  urlList,
+			"duration": duration,
+		}).Info("[getAllCachedURLs] Loaded urlList from cache")
 	}
 
 	// return a copy
 	return append([]string(nil), urlList...)
 }
 
-// isValidURL checks if str is a syntactically valid URL with a resolvable host or IP.
+/**
+ * @function isValidURL
+ * @description Checks if str is a syntactically valid URL with a resolvable host or IP.
+ * @param {string} str The string to check.
+ * @returns {bool} True if str is a valid URL, false otherwise.
+ * @dependencies url.ParseRequestURI, net.ParseIP, strings.Contains
+ */
 func isValidURL(str string) bool {
 	parsedURL, err := url.ParseRequestURI(str)
 	if err != nil {
-		logrus.Info(err.Error())
+		log.WithFields(logrus.Fields{
+			"url":   str,
+			"error": err,
+		}).Info("[isValidURL] Invalid URL")
 		return false
 	}
 	host := parsedURL.Hostname()
@@ -2816,7 +3439,13 @@ func isValidURL(str string) bool {
 	return strings.Contains(host, ".")
 }
 
-// sanitizeURL ensures URLs always use https:// if no scheme or if http://
+/**
+ * @function sanitizeURL
+ * @description Ensures URLs always use https:// if no scheme or if http://
+ * @param {string} rawURL The raw URL to sanitize.
+ * @returns {string} The sanitized URL.
+ * @dependencies url.Parse
+ */
 func sanitizeURL(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil || parsedURL.Scheme == "" {
@@ -2827,7 +3456,12 @@ func sanitizeURL(rawURL string) string {
 	return rawURL
 }
 
-// getItemAuthor returns an item’s author if set, checking iTunesExt first (for podcasts).
+/**
+ * @function getItemAuthor
+ * @description Returns an item’s author if set, checking iTunesExt first (for podcasts).
+ * @param {*gofeed.Item} item The feed item.
+ * @returns {string} The author of the item, or an empty string if not found.
+ */
 func getItemAuthor(item *gofeed.Item) string {
 	if item.ITunesExt != nil && item.ITunesExt.Author != "" {
 		return item.ITunesExt.Author
@@ -2838,8 +3472,14 @@ func getItemAuthor(item *gofeed.Item) string {
 	return ""
 }
 
-// determineItemTypeAndDuration checks if the feed item is a podcast. If yes,
-// parses the item’s duration. Returns a type (podcast or article) and the duration in seconds.
+/**
+ * @function determineItemTypeAndDuration
+ * @description Checks if the feed item is a podcast. If yes,
+ *              parses the item’s duration. Returns a type (podcast or article) and the duration in seconds.
+ * @param {*gofeed.Item} item The feed item.
+ * @returns {string, int} The type of the item ("podcast" or "article") and the duration in seconds.
+ * @dependencies parseDuration
+ */
 func determineItemTypeAndDuration(item *gofeed.Item) (string, int) {
 	if item.ITunesExt != nil {
 		return "podcast", parseDuration(item.ITunesExt.Duration)
@@ -2847,7 +3487,13 @@ func determineItemTypeAndDuration(item *gofeed.Item) (string, int) {
 	return "article", 0
 }
 
-// parseDuration attempts to convert a time-like string (e.g., 3600 or HH:MM:SS) into total seconds.
+/**
+ * @function parseDuration
+ * @description Attempts to convert a time-like string (e.g., 3600 or HH:MM:SS) into total seconds.
+ * @param {string} durationStr The duration string to parse.
+ * @returns {int} The duration in seconds, or 0 if parsing fails.
+ * @dependencies strconv.Atoi, strings.Split
+ */
 func parseDuration(durationStr string) int {
 	if durationStr == "" {
 		return 0
@@ -2875,7 +3521,13 @@ func parseDuration(durationStr string) int {
 	}
 }
 
-// stringInSlice returns true if str is found in the slice list.
+/**
+ * @function stringInSlice
+ * @description Returns true if str is found in the slice list.
+ * @param {string} str The string to search for.
+ * @param {[]string} list The slice to search in.
+ * @returns {bool} True if str is found in list, false otherwise.
+ */
 func stringInSlice(str string, list []string) bool {
 	for _, v := range list {
 		if v == str {
@@ -2885,8 +3537,15 @@ func stringInSlice(str string, list []string) bool {
 	return false
 }
 
-// mergeFeedItemsAtParserLevel merges old items from the cache with newly fetched items, deduplicating by ID
-// and retaining only items from within the last 24 hours (cachePeriod). Also updates items if content changed.
+/**
+ * @function mergeFeedItemsAtParserLevel
+ * @description Merges old items from the cache with newly fetched items, deduplicating by ID
+ *              and retaining only items from within the last 24 hours (cachePeriod). Also updates items if content changed.
+ * @param {string} feedURL The URL of the feed.
+ * @param {[]FeedResponseItem} newItems The newly fetched feed items.
+ * @returns {[]FeedResponseItem, error} The merged slice of FeedResponseItem objects, or an error if retrieval from cache fails.
+ * @dependencies cache.Get, isWithinPeriod, isUpdatedContent, log
+ */
 func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([]FeedResponseItem, error) {
 	cacheKey := feedURL
 	var existingFeedResponse FeedResponse
@@ -2894,17 +3553,27 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 
 	// Attempt to get an existing feed from the cache
 	if err := cache.Get(feed_prefix, cacheKey, &existingFeedResponse); err != nil {
-		log.Errorf("[mergeFeedItemsAtParserLevel] Error getting existing items for feed %s: %v", feedURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   feedURL,
+			"error": err,
+		}).Error("[mergeFeedItemsAtParserLevel] Error getting existing items")
 		existingItems = nil
 	} else {
 		if existingFeedResponse.Items != nil {
 			existingItems = *existingFeedResponse.Items
-			log.Printf("[mergeFeedItemsAtParserLevel] Found %d existing items for feed %s", len(existingItems), feedURL)
+			log.WithFields(logrus.Fields{
+				"url":   feedURL,
+				"count": len(existingItems),
+			}).Debug("[mergeFeedItemsAtParserLevel] Found existing items")
 		}
 	}
 
 	itemMap := make(map[string]FeedResponseItem)
-	log.Printf("[mergeFeedItemsAtParserLevel] Merging %d existing items with %d new items", len(existingItems), len(newItems))
+	log.WithFields(logrus.Fields{
+		"url":      feedURL,
+		"existing": len(existingItems),
+		"new":      len(newItems),
+	}).Debug("[mergeFeedItemsAtParserLevel] Merging items")
 	for _, oldItem := range existingItems {
 		if isWithinPeriod(oldItem, cachePeriod) {
 			itemMap[oldItem.ID] = oldItem
@@ -2931,13 +3600,24 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 
 	// Store merged items in the cache so subsequent fetches have updated items
 	if err := cache.Set(feed_prefix, feedURL, merged, 24*time.Hour); err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   feedURL,
+			"error": err,
+		}).Error("[mergeFeedItemsAtParserLevel] Failed to cache merged items")
 		return nil, err
 	}
 
 	return merged, nil
 }
 
-// isWithinPeriod returns true if the FeedResponseItem’s Published date is within 'days' days of now.
+/**
+ * @function isWithinPeriod
+ * @description Returns true if the FeedResponseItem’s Published date is within 'days' days of now.
+ * @param {FeedResponseItem} item The FeedResponseItem to check.
+ * @param {int} days The number of days to check within.
+ * @returns {bool} True if the item's Published date is within the specified period, false otherwise.
+ * @dependencies time.Parse, time.Since
+ */
 func isWithinPeriod(item FeedResponseItem, days int) bool {
 	t, err := time.Parse(layout, item.Published)
 	if err != nil {
@@ -2946,8 +3626,15 @@ func isWithinPeriod(item FeedResponseItem, days int) bool {
 	return time.Since(t) <= time.Duration(days)*24*time.Hour
 }
 
-// isUpdatedContent returns true if newIt is more recent than oldIt by published date
-// or if newIt’s content differs from oldIt’s content.
+/**
+ * @function isUpdatedContent
+ * @description Returns true if newIt is more recent than oldIt by published date
+ *              or if newIt’s content differs from oldIt’s content.
+ * @param {FeedResponseItem} oldIt The old FeedResponseItem.
+ * @param {FeedResponseItem} newIt The new FeedResponseItem.
+ * @returns {bool} True if the new item is more recent or has different content, false otherwise.
+ * @dependencies time.Parse
+ */
 func isUpdatedContent(oldIt, newIt FeedResponseItem) bool {
 	oldTime, _ := time.Parse(layout, oldIt.Published)
 	newTime, _ := time.Parse(layout, newIt.Published)
@@ -2964,17 +3651,29 @@ func isUpdatedContent(oldIt, newIt FeedResponseItem) bool {
 }
 
 //routes.go
+// Package main provides the main functionality for the web server.
 package main
 
 import (
 	"net/http"
+
+	"github.com/sirupsen/logrus"
 )
 
+/**
+ * @function errorMiddlewareFunc
+ * @description Middleware function that recovers from panics, logs the error, and sends a 500 response.
+ * @param {http.HandlerFunc} next The next handler function in the chain.
+ * @returns {http.HandlerFunc} The wrapped handler function.
+ * @dependencies log
+ */
 func errorMiddlewareFunc(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("An error occurred: %v", err)
+				log.WithFields(logrus.Fields{
+					"error": err,
+				}).Error("An error occurred")
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
@@ -2982,7 +3681,15 @@ func errorMiddlewareFunc(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// InitializeRoutes sets up all the routes for the application
+/**
+ * @function InitializeRoutes
+ * @description Sets up all the routes for the application.
+ * @param {*http.ServeMux} mux The HTTP request multiplexer.
+ * @returns {void}
+ * @dependencies errorMiddlewareFunc, validateURLsHandler, parseHandler, discoverHandler,
+ *               getReaderViewHandler, createShareHandler, shareHandler, searchHandler,
+ *               streamAudioHandler, metadataHandler
+ */
 func InitializeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/validate", errorMiddlewareFunc(validateURLsHandler))
 	mux.HandleFunc("/parse", errorMiddlewareFunc(parseHandler))
@@ -2996,6 +3703,7 @@ func InitializeRoutes(mux *http.ServeMux) {
 }
 
 //streamaudio.go
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -3010,6 +3718,7 @@ import (
 
 	texttospeech "cloud.google.com/go/texttospeech/apiv1"
 	"cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -3017,14 +3726,30 @@ var (
 	once      sync.Once
 )
 
+/**
+ * @function initTTSClient
+ * @description Initializes the Google Cloud Text-to-Speech client.
+ * @returns {void}
+ * @dependencies texttospeech.NewClient, log
+ */
 func initTTSClient() {
 	var err error
 	ttsClient, err = texttospeech.NewClient(context.Background())
 	if err != nil {
-		log.Fatalf("Failed to create TTS client: %v", err)
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Fatal("Failed to create TTS client")
 	}
 }
 
+/**
+ * @function splitTextIntoChunks
+ * @description Splits a text into chunks of a specified maximum size,
+ *              ensuring that words are not split across chunks.
+ * @param {string} text The text to split.
+ * @param {int} maxChunkSize The maximum size of each chunk.
+ * @returns {[]string} A slice of text chunks.
+ */
 func splitTextIntoChunks(text string, maxChunkSize int) []string {
 	var chunks []string
 	words := strings.Fields(text)
@@ -3048,11 +3773,25 @@ func splitTextIntoChunks(text string, maxChunkSize int) []string {
 	return chunks
 }
 
+/**
+ * @function streamAudioHandler
+ * @description Handles HTTP requests to the /streamaudio endpoint.
+ *              It expects a POST request with a JSON body containing text or a URL to synthesize.
+ *              It synthesizes the text to speech using the Google Cloud Text-to-Speech API,
+ *              caches the audio content, and streams it to the client.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ * @dependencies cache, log, once, initTTSClient, ttsClient, splitTextIntoChunks
+ */
 func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
-	log.Print("Received request to stream audio")
+	log.Info("Received request to stream audio")
 
 	// Ensure it's a POST request
 	if r.Method != http.MethodPost {
+		log.WithFields(logrus.Fields{
+			"method": r.Method,
+		}).Warn("[streamAudioHandler] Invalid method")
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -3061,41 +3800,56 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 	var ttsReq TTSRequest
 	err := json.NewDecoder(r.Body).Decode(&ttsReq)
 	if err != nil {
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[streamAudioHandler] Error decoding request body")
 		http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	log.Print("Request: ", ttsReq.Text)
-	log.Print("Request URL: ", ttsReq.Url)
+	log.WithFields(logrus.Fields{
+		"text": ttsReq.Text,
+		"url":  ttsReq.Url,
+	}).Debug("[streamAudioHandler] Request received")
 
 	// Check if text is provided
 	if ttsReq.Text == "" {
+		log.Warn("[streamAudioHandler] No text provided")
 		http.Error(w, "No text provided", http.StatusBadRequest)
 		return
 	} else if ttsReq.Url != "" {
 		// Check if the URL is valid
 		if !(strings.HasPrefix(ttsReq.Url, "http://") || strings.HasPrefix(ttsReq.Url, "https://")) {
+			log.WithFields(logrus.Fields{
+				"url": ttsReq.Url,
+			}).Warn("[streamAudioHandler] Invalid URL provided")
 			http.Error(w, "Invalid URL provided", http.StatusBadRequest)
 			return
 		}
 	}
 
 	cacheKey := ttsReq.Url
+	if cacheKey == "" {
+		cacheKey = createHash(ttsReq.Text)
+	}
 
 	var cachedAudio []byte
 	// Check if the audio content is cached
 	err = cache.Get(audio_prefix, cacheKey, &cachedAudio)
 	if err == nil {
-		log.Print("Audio content found in cache")
+		log.WithFields(logrus.Fields{
+			"key": cacheKey,
+		}).Debug("[streamAudioHandler] Audio content found in cache")
 		// Set the headers and write the audio content to the response
 		w.Header().Set("Content-Type", "audio/mpeg")
 		w.Header().Set("Content-Length", fmt.Sprint(len(cachedAudio)))
 
 		// Write the audio content to the response
 		_, err = w.Write(cachedAudio)
-
 		if err != nil {
-			log.Printf("Failed to write audio content to response: %v", err)
+			log.WithFields(logrus.Fields{
+				"error": err,
+			}).Error("[streamAudioHandler] Failed to write audio content to response")
 		}
 		return
 	}
@@ -3103,7 +3857,9 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 	// Initialize the TTS client once
 	once.Do(initTTSClient)
 
-	log.Print("Text to be synthesized: ", ttsReq.Text)
+	log.WithFields(logrus.Fields{
+		"text": ttsReq.Text,
+	}).Debug("[streamAudioHandler] Text to be synthesized")
 	const maxChunkSize = 1000
 
 	// Split text into chunks of up to 1000 characters
@@ -3131,11 +3887,13 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 		// Perform the text-to-speech request
 		resp, err := ttsClient.SynthesizeSpeech(context.Background(), &req)
 		if err != nil {
-			log.Printf("Failed to synthesize speech: %v", err)
+			log.WithFields(logrus.Fields{
+				"error": err,
+			}).Error("[streamAudioHandler] Failed to synthesize speech")
 			http.Error(w, "Failed to synthesize speech", http.StatusInternalServerError)
 			return
 		} else {
-			log.Print("Speech synthesized successfully")
+			log.Debug("[streamAudioHandler] Speech synthesized successfully")
 		}
 
 		// Append the audio content to the buffer
@@ -3144,9 +3902,14 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Cache the audio content
 	if err := cache.Set(audio_prefix, cacheKey, audioContent.Bytes(), 7*24*time.Hour); err != nil {
-		log.Printf("Failed to cache audio content: %v", err)
+		log.WithFields(logrus.Fields{
+			"key":   cacheKey,
+			"error": err,
+		}).Error("[streamAudioHandler] Failed to cache audio content")
 	} else {
-		log.Print("Audio content cached successfully for url: ", cacheKey)
+		log.WithFields(logrus.Fields{
+			"key": cacheKey,
+		}).Debug("[streamAudioHandler] Audio content cached successfully")
 	}
 
 	// Set the headers and write the audio content to the response
@@ -3156,7 +3919,9 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 	// Write the audio content to the response
 	_, err = w.Write(audioContent.Bytes())
 	if err != nil {
-		log.Printf("Failed to write audio content to response: %v", err)
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[streamAudioHandler] Failed to write audio content to response")
 	}
 }
 

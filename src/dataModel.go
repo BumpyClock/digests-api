@@ -1,3 +1,4 @@
+// Package models defines the data structures used in the application.
 package main
 
 import (
@@ -239,6 +240,40 @@ type WebMedia struct {
 	ReleaseDate string   `json:"release_date,omitempty"`
 }
 
+// Urls represents a list of URLs in a JSON payload.
+type Urls struct {
+	Urls []string `json:"urls"`
+}
+
+// FeedResult represents the result of discovering an RSS feed for a URL.
+type FeedResult struct {
+	URL      string `json:"url"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+	FeedLink string `json:"feedLink"`
+}
+
+// createShareRequest represents the expected JSON body for the /create endpoint.
+type createShareRequest struct {
+	Urls []string `json:"urls"`
+}
+
+// fetchShareRequest represents the expected JSON body for the /share endpoint.
+type fetchShareRequest struct {
+	Key string `json:"key"`
+}
+
+// URLValidationRequest represents the request format for URL validation
+type URLValidationRequest struct {
+	URLs []string `json:"urls"`
+}
+
+// URLStatus represents the status of a single URL validation
+type URLStatus struct {
+	URL    string `json:"url"`
+	Status string `json:"status"`
+}
+
 // CONSTANTS
 
 const redis_password = ""
@@ -254,10 +289,3 @@ const audio_prefix = "tts:"
 const DefaultRed = uint8(128)
 const DefaultGreen = uint8(128)
 const DefaultBlue = uint8(128)
-
-// const thumbnailColorPrefix = "thumbnailColor_"
-
-// var colorComputeSemaphore = make(chan struct{}, numWorkers)
-
-// const redis_feedsItems_key = "feedsItems"
-// const redis_feedDetails_key = "feedDetails"

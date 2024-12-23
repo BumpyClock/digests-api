@@ -1,3 +1,4 @@
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly"
 	"github.com/mmcdole/gofeed"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -38,20 +40,22 @@ func NewThumbnailFinder() *ThumbnailFinder {
 	return &ThumbnailFinder{}
 }
 
-// GetMetaData fetches a web page (targetURL) using Colly, extracting Open Graph tags
-// and JSON-LD data to produce a MetaDataResponseItem. It also attempts to discover
-// the favicon and domain if not provided by OG or JSON-LD.
-/*
- * Inputs:
- *   targetURL (string): The URL to visit and parse.
- *
- * Outputs:
- *   (MetaDataResponseItem, error): On success, returns a struct with combined
- *   metadata from both OG tags and JSON-LD. Returns an error if the fetch or parse fails.
+/**
+ * @function GetMetaData
+ * @description Fetches a web page (targetURL) using Colly, extracting Open Graph tags
+ * and JSON-LD data to produce a MetaDataResponseItem. It also attempts to discover
+ * the favicon and domain if not provided by OG or JSON-LD.
+ * @param {string} targetURL The URL to visit and parse.
+ * @returns {MetaDataResponseItem, error} On success, returns a struct with combined
+ * metadata from both OG tags and JSON-LD. Returns an error if the fetch or parse fails.
+ * @dependencies colly.NewCollector, colly.UserAgent, c.OnHTML, c.OnRequest, c.Visit, url.Parse, strconv.Atoi, json.Unmarshal, goquery.Selection, log
  */
 func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 	// Basic validation
 	if targetURL == "" || targetURL == "http://" || targetURL == "://" || targetURL == "about:blank" {
+		log.WithFields(logrus.Fields{
+			"url": targetURL,
+		}).Error("[GetMetaData] URL is empty or invalid")
 		return MetaDataResponseItem{}, fmt.Errorf("URL is empty or invalid")
 	}
 
@@ -204,6 +208,10 @@ func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 
 	// STEP 5: Visit the target page
 	if err := c.Visit(targetURL); err != nil {
+		log.WithFields(logrus.Fields{
+			"url":   targetURL,
+			"error": err,
+		}).Error("[GetMetaData] Error visiting URL")
 		return MetaDataResponseItem{}, fmt.Errorf("error visiting URL %s: %w", targetURL, err)
 	}
 
@@ -216,33 +224,44 @@ func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
  *              It first checks the cache, then enclosures, then content, and finally fetches metadata.
  * @param {*gofeed.Item} item The feed item to find a thumbnail for.
  * @returns {string} The URL of the thumbnail, or an empty string if no thumbnail was found.
- * @dependencies extractThumbnailFromEnclosures, extractThumbnailFromContent, GetMetaData
+ * @dependencies extractThumbnailFromEnclosures, extractThumbnailFromContent, GetMetaData, log
  */
 func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 	if thumb, ok := tf.cache.Load(item.Link); ok {
-		log.Println("[FindThumbnailForItem] Found cached thumbnail for", item.Link)
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found cached thumbnail")
 		return thumb.(string)
 	}
 
 	thumbnail := tf.extractThumbnailFromEnclosures(item.Enclosures)
 	if thumbnail != "" {
-		log.Println("[FindThumbnailForItem] Found thumbnail in enclosures for", item.Link)
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found thumbnail in enclosures")
 		tf.cache.Store(item.Link, thumbnail)
 		return thumbnail
 	}
 
 	thumbnail = tf.extractThumbnailFromContent(item.Content)
 	if thumbnail != "" {
-		log.Println("[FindThumbnailForItem] Found thumbnail in content for", item.Link)
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Found thumbnail in content")
 		tf.cache.Store(item.Link, thumbnail)
 		return thumbnail
 	}
 
 	if item.Link != "" {
-		log.Println("[FindThumbnailForItem] Fetching metadata for", item.Link)
+		log.WithFields(logrus.Fields{
+			"url": item.Link,
+		}).Debug("[FindThumbnailForItem] Fetching metadata")
 		metaData, err := GetMetaData(item.Link)
 		if err != nil {
-			log.Printf("Error getting metadata for %s: %v", item.Link, err)
+			log.WithFields(logrus.Fields{
+				"url":   item.Link,
+				"error": err,
+			}).Error("[FindThumbnailForItem] Error getting metadata")
 			return ""
 		}
 
@@ -250,7 +269,9 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 			thumbnail = metaData.Images[0].URL
 		}
 		if thumbnail != "" {
-			log.Println("[FindThumbnailForItem] Found thumbnail in metadata for", item.Link)
+			log.WithFields(logrus.Fields{
+				"url": item.Link,
+			}).Debug("[FindThumbnailForItem] Found thumbnail in metadata")
 			tf.cache.Store(item.Link, thumbnail)
 			return thumbnail
 		}
@@ -280,12 +301,14 @@ func (tf *ThumbnailFinder) extractThumbnailFromEnclosures(enclosures []*gofeed.E
  * @description Extracts a thumbnail URL from HTML content.
  * @param {string} content The HTML content to search.
  * @returns {string} The URL of the first image found in the content, or an empty string if none were found.
- * @dependencies goquery
+ * @dependencies goquery.NewDocumentFromReader, log
  */
 func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
 	if err != nil {
-		log.Printf("Error parsing content: %v", err)
+		log.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("[extractThumbnailFromContent] Error parsing content")
 		return ""
 	}
 
@@ -302,12 +325,15 @@ func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
  *              and finally extracts the color using the K-means algorithm.
  * @param {string} imageURL The URL of the image to extract the color from.
  * @returns {r, g, b uint8} The red, green, and blue components of the prominent color.
- * @dependencies httpClient, cache, prominentcolor, image.Decode
+ * @dependencies httpClient, cache, prominentcolor, image.Decode, log
  */
 func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("Recovered from panic while processing URL %s: %v", imageURL, rec)
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"panic": rec,
+			}).Error("[extractColorFromThumbnail_prominentColor] Recovered from panic")
 			r, g, b = 128, 128, 128
 		}
 	}()
@@ -322,14 +348,20 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Attempt to retrieve the color from the cache
 	err := cache.Get(cachePrefix, imageURL, &cachedColor)
 	if err == nil {
-		log.Printf("[extractColorFromThumbnail_prominentColor] Found cached color for %s: %v", imageURL, cachedColor)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"color": cachedColor,
+		}).Debug("[extractColorFromThumbnail_prominentColor] Found cached color")
 		return cachedColor.R, cachedColor.G, cachedColor.B
 	}
 
 	// Validate the image URL
 	parsedURL, err := url.Parse(imageURL)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		log.Printf("Invalid image URL %s", imageURL)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Invalid image URL")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
@@ -339,14 +371,20 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
-		log.Printf("Error creating request for prominentColor: %v", err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Error creating request")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Printf("Failed to download image %s: %v", imageURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Failed to download image")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
@@ -354,28 +392,41 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
-		log.Printf("Failed to decode image %s: %v", imageURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Failed to decode image")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
-	log.Printf("Starting color extraction for %s", imageURL)
+	log.WithFields(logrus.Fields{
+		"url": imageURL,
+	}).Debug("[extractColorFromThumbnail_prominentColor] Starting color extraction")
 
 	bounds := img.Bounds()
 	imgNRGBA := image.NewNRGBA(bounds)
 	draw.Draw(imgNRGBA, bounds, img, bounds.Min, draw.Src)
 
 	if imgNRGBA == nil {
-		log.Printf("imgNRGBA is nil for URL %s", imageURL)
+		log.WithFields(logrus.Fields{
+			"url": imageURL,
+		}).Error("[extractColorFromThumbnail_prominentColor] imgNRGBA is nil")
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
 
 	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
 	if err != nil || len(colors) == 0 {
-		log.Printf("Error extracting prominent color with background mask for %s: %v", imageURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color with background mask")
 		colors, err = prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, nil)
 		if err != nil || len(colors) == 0 {
-			log.Printf("Error extracting prominent color without background mask for %s: %v", imageURL, err)
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"error": err,
+			}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color without background mask")
 			cacheDefaultColor(imageURL)
 			return 128, 128, 128
 		}
@@ -383,9 +434,16 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	if len(colors) > 0 {
 		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
-		log.Printf("Extracted color for %s: %v", imageURL, extractedColor)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"color": extractedColor,
+		}).Debug("[extractColorFromThumbnail_prominentColor] Extracted color")
 		if err := cache.Set(cachePrefix, imageURL, extractedColor, 24*time.Hour); err != nil {
-			log.Printf("Failed to cache color for %s: %v", imageURL, err)
+			log.WithFields(logrus.Fields{
+				"url":   imageURL,
+				"color": extractedColor,
+				"error": err,
+			}).Error("[extractColorFromThumbnail_prominentColor] Failed to cache color")
 		}
 		return extractedColor.R, extractedColor.G, extractedColor.B
 	}
@@ -399,14 +457,17 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
  * @function cacheDefaultColor
  * @description Caches the default color for a given image URL.
  * @param {string} imageURL The URL of the image to cache the default color for.
- * @dependencies cache
+ * @dependencies cache, log
  */
 func cacheDefaultColor(imageURL string) {
 	cachePrefix := thumbnailColorPrefix
 	defaultColor := RGBColor{defaultColor, defaultColor, defaultColor}
 
 	if err := cache.Set(cachePrefix, imageURL, defaultColor, cacheDuration); err != nil {
-		log.Printf("[cacheDefaultColor] Failed to cache default color for %s: %v", imageURL, err)
+		log.WithFields(logrus.Fields{
+			"url":   imageURL,
+			"error": err,
+		}).Error("[cacheDefaultColor] Failed to cache default color")
 	}
 }
 
@@ -417,7 +478,7 @@ func cacheDefaultColor(imageURL string) {
  *              and searches for link elements with rel attributes containing "icon", "shortcut", or "apple-touch-icon".
  * @param {string} pageURL The URL of the page to discover the favicon for.
  * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
- * @dependencies httpClient
+ * @dependencies httpClient, html.Parse, findFavicon, url.Parse, log
  */
 func DiscoverFavicon(pageURL string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
@@ -425,7 +486,10 @@ func DiscoverFavicon(pageURL string) string {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
-		log.Printf("Error creating request for favicon discovery: %v", err)
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error creating request")
 		return ""
 	}
 
@@ -433,19 +497,28 @@ func DiscoverFavicon(pageURL string) string {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Printf("Error fetching page for favicon: %v", err)
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error fetching page")
 		return ""
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("Error fetching page %s for favicon: %s", pageURL, resp.Status)
+		log.WithFields(logrus.Fields{
+			"url":    pageURL,
+			"status": resp.Status,
+		}).Error("[DiscoverFavicon] Error fetching page")
 		return ""
 	}
 
 	doc, err := html.Parse(resp.Body)
 	if err != nil {
-		log.Printf("Error parsing HTML for favicon: %v", err)
+		log.WithFields(logrus.Fields{
+			"url":   pageURL,
+			"error": err,
+		}).Error("[DiscoverFavicon] Error parsing HTML")
 		return ""
 	}
 
@@ -505,6 +578,7 @@ func findFavicon(n *html.Node) string {
  * @param {*colly.Collector} c The colly collector to use for the request.
  * @param {string} pageURL The URL of the page to discover the favicon for.
  * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
+ * @dependencies colly.HTMLElement, c.OnHTML, c.Visit
  */
 func DiscoverFaviconWithColly(c *colly.Collector, pageURL string) string {
 	var favicon string
