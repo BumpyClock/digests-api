@@ -135,7 +135,8 @@ func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 	// Unmarshal data into dest
 	if err := json.Unmarshal(data, dest); err != nil {
 		logrus.WithFields(logrus.Fields{
-			"key": fullKey,
+			"key":   fullKey,
+			"error": err,
 		}).Error("Failed to unmarshal value from SQLite cache")
 		return err
 	}
