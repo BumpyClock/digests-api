@@ -23,12 +23,6 @@
         # Clean up apt caches to reduce image size
         && apt-get clean && rm -rf /var/lib/apt/lists/*
     
-    # Set environment variables for Chromium
-    ENV CHROMEDP_EXEC_PATH=/usr/bin/chromium
-    
-    # Set environment variable for GCP credentials
-    ENV GOOGLE_APPLICATION_CREDENTIALS=/credentials/credentials.json
-    
     # Create and switch to the /app directory
     WORKDIR /app
     
