@@ -763,7 +763,7 @@ func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResp
 		}
 	}
 
-	siteTitle := metaData.Title
+	siteTitle := metaData.Sitename
 	if siteTitle == "" {
 		siteTitle = feed.Title
 	}
