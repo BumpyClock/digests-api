@@ -15,13 +15,13 @@
     RUN CGO_ENABLED=0 GOOS=linux go build -o main .
     
     # ---------- Final Stage ----------
-    FROM debian:stable-slim
-    
-    # Install necessary packages for Chromium
-    RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        # Clean up apt caches to reduce image size
-        && apt-get clean && rm -rf /var/lib/apt/lists/*
+   # Start a new stage from scratch
+FROM alpine:latest
+
+# Install necessary packages
+RUN apk --no-cache add ca-certificates
+   
+
     
     # Create and switch to the /app directory
     WORKDIR /app
