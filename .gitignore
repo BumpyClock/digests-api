@@ -9,3 +9,5 @@ src/build
 src/tmp/*
 src/tmp
 src/tmp/main.exe
+src/concatenated_output.txt
+src/concatenated_output.txt
