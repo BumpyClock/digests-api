@@ -1,13 +1,18 @@
+# Ignore debug files
 src/__debug_*.*
 src/__debug_bin*
+
+# Ignore build directories and files
 build/digests-api
 build/*
 build/macos/digests-api
 src/build/digests-api-linux-amd64
 src/build/*.*
-src/build
+
+# Ignore temporary files
 src/tmp/*
 src/tmp
 src/tmp/main.exe
-src/concatenated_output.txt
+
+# Ignore specific files
 src/concatenated_output.txt
