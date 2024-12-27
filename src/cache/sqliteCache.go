@@ -16,9 +16,15 @@ type SQLiteCache struct {
 	db *sql.DB
 }
 
+// ErrSQLCacheMiss is the error returned when a key is not found or expired in the SQLite cache.
 var ErrSQLCacheMiss = errors.New("sqlite cache: key not found or expired")
 
-// NewSQLiteCache creates a new SQLiteCache instance and initializes the database schema.
+/**
+ * @function NewSQLiteCache
+ * @description Creates a new SQLiteCache instance and initializes the database.
+ * @param {string} dbPath The path to the SQLite database file.
+ * @returns {(*SQLiteCache, error)} A pointer to the new SQLiteCache and an error if initialization failed.
+ */
 func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -48,8 +54,15 @@ func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
 	return &SQLiteCache{db: db}, nil
 }
 
-// Set inserts or updates a key in the SQLite database with an expiration time.
-// prefix:key is used as the primary key.
+/**
+ * @function Set
+ * @description Inserts or updates a key-value pair in the SQLite database with an expiration time.
+ * @param {string} prefix The prefix for the key.
+ * @param {string} key The key to store the value under.
+ * @param {interface{}} value The value to store.
+ * @param {time.Duration} expiration The expiration time for the key-value pair.
+ * @returns {error} An error if the operation failed.
+ */
 func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
 	fullKey := prefix + ":" + key
 
@@ -100,8 +113,14 @@ func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expirati
 	return nil
 }
 
-// Get retrieves a key from the SQLite database and unmarshals it into dest.
-// If the key is expired or missing, it returns an error.
+/**
+ * @function Get
+ * @description Retrieves a value from the SQLite database by key.
+ * @param {string} prefix The prefix for the key.
+ * @param {string} key The key to retrieve the value for.
+ * @param {interface{}} dest A pointer to the variable to store the retrieved value in.
+ * @returns {error} An error if the key is not found, expired, or the value could not be unmarshaled.
+ */
 func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 	fullKey := prefix + ":" + key
 
@@ -135,8 +154,7 @@ func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 	// Unmarshal data into dest
 	if err := json.Unmarshal(data, dest); err != nil {
 		logrus.WithFields(logrus.Fields{
-			"key":   fullKey,
-			"error": err,
+			"key": fullKey,
 		}).Error("Failed to unmarshal value from SQLite cache")
 		return err
 	}
@@ -144,8 +162,12 @@ func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 	return nil
 }
 
-// GetSubscribedListsFromCache scans the cache table for records that start with prefix:
-// and attempts to unmarshal them into a FeedItem to extract the FeedUrl.
+/**
+ * @function GetSubscribedListsFromCache
+ * @description Retrieves all subscribed lists from the SQLite database that match the given prefix.
+ * @param {string} prefix The prefix to filter keys by.
+ * @returns {([]string, error)} A slice of feed URLs and an error if any occurred.
+ */
 func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
 	var urls []string
 
@@ -198,8 +220,16 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 	return urls, nil
 }
 
-// SetFeedItems fetches existing feed items from the cache, deduplicates them with newItems,
-// then updates the cache with the merged slice.
+/**
+ * @function SetFeedItems
+ * @description Sets the feed items for a given key, merging with existing items if any.
+ *              Deduplication is performed based on the GUID of the feed items.
+ * @param {string} prefix The prefix for the cache key.
+ * @param {string} key The cache key.
+ * @param {[]FeedItem} newItems The new feed items to add.
+ * @param {time.Duration} expiration The expiration time for the cache entry.
+ * @returns {error} An error if any occurred during the operation.
+ */
 func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
 	var existingItems []FeedItem
 	err := c.Get(prefix, key, &existingItems)
@@ -224,7 +254,11 @@ func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedIte
 	return c.Set(prefix, key, uniqueItems, expiration)
 }
 
-// Count returns the total number of items in the cache (including expired items).
+/**
+ * @function Count
+ * @description Returns the total number of items in the SQLite cache, including expired items.
+ * @returns {(int64, error)} The number of items and an error if the operation failed.
+ */
 func (c *SQLiteCache) Count() (int64, error) {
 	stmt := `SELECT COUNT(*) FROM cache;`
 	var count int64

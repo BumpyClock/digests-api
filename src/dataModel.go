@@ -5,6 +5,12 @@ import (
 	"github.com/mmcdole/gofeed"
 )
 
+// ErrorResponse represents a standard error response for client-facing errors.
+type ErrorResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 // ParseRequest represents the expected incoming JSON payload structure.
 // ParseRequest represents the expected JSON body for the /parse endpoint.
 type ParseRequest struct {
@@ -13,19 +19,21 @@ type ParseRequest struct {
 	ItemsPerPage int      `json:"itemsperpage"`
 }
 
+// RGBColor represents a color using its red, green, and blue components.
 type RGBColor struct {
 	R uint8 `json:"r"`
 	G uint8 `json:"g"`
 	B uint8 `json:"b"`
 }
 
-// Add these structs to your existing code
+// MediaContent represents metadata about media content, like images or videos, found in a web page.
 type MediaContent struct {
 	URL    string `xml:"url,attr"`
 	Width  int    `xml:"width,attr"`
 	Height int    `xml:"height,attr"`
 }
 
+// ExtendedItem extends the gofeed.Item struct to include media content metadata.
 type ExtendedItem struct {
 	*gofeed.Item
 	MediaContent []MediaContent `xml:"http://search.yahoo.com/mrss/ content"`
@@ -75,10 +83,12 @@ type FeedResponse struct {
 	Items         *[]FeedResponseItem `json:"items,omitempty"`
 }
 
+// Feeds is a collection of FeedResponse objects.
 type Feeds struct {
 	Feeds []FeedResponse `json:"feeds"`
 }
 
+// ReaderViewResult represents the result of parsing a URL for a reader view.
 type ReaderViewResult struct {
 	URL         string `json:"url"`
 	Status      string `json:"status"`
@@ -91,6 +101,7 @@ type ReaderViewResult struct {
 	TextContent string `json:"textContent"`
 }
 
+// FeedSearchAPIResponseItem represents an item in the response from the feed search API.
 type FeedSearchAPIResponseItem struct {
 	Bozo           int      `json:"bozo"`
 	Content_length int      `json:"content_length"`
@@ -113,6 +124,7 @@ type FeedSearchAPIResponseItem struct {
 	Self_Url       string   `json:"self_url"`
 }
 
+// FeedSearchResponseItem represents an item in the response from a feed search.
 type FeedSearchResponseItem struct {
 	Title        string  `json:"title"`
 	Url          string  `json:"url"`
@@ -128,6 +140,7 @@ type FeedSearchResponseItem struct {
 	Score        float64 `json:"score"`
 }
 
+// PodcastSearchResponseItem represents an item in the response from a podcast search.
 type PodcastSearchResponseItem struct {
 	Title             string   `json:"title"`
 	Url               string   `json:"url"`
@@ -142,6 +155,7 @@ type PodcastSearchResponseItem struct {
 	NewestItemPubdate float32  `json:"newestItemPubdate"`
 }
 
+// PodcastAPIResponseItem represents an item in the response from the Podcast Index API.
 type PodcastAPIResponseItem struct {
 	Id                     int                         `json:"id"`
 	Title                  string                      `json:"title"`
@@ -179,11 +193,13 @@ type PodcastAPIResponseItem struct {
 	Transcripts            []PodcastTranscriptsDetails `json:"transcripts"`
 }
 
+// PodcastTranscriptsDetails represents details about a podcast transcript.
 type PodcastTranscriptsDetails struct {
 	Url  string                 `json:"url"`
 	Type PodcastTranscriptsType `json:"type"`
 }
 
+// PodcastTranscriptsType represents the type of a podcast transcript.
 type PodcastTranscriptsType string
 
 // Define constants of the custom type
@@ -193,6 +209,7 @@ const (
 	ApplicationVTT PodcastTranscriptsType = "application/vtt"
 )
 
+// PodcastSearchAPIResponse represents the response from the Podcast Index API for a search query.
 type PodcastSearchAPIResponse struct {
 	Items       []PodcastAPIResponseItem `json:"feeds"`
 	Status      string                   `json:"status"`
@@ -201,6 +218,7 @@ type PodcastSearchAPIResponse struct {
 	Description string                   `json:"description"`
 }
 
+// TTSRequest represents a request to the Text-to-Speech service.
 type TTSRequest struct {
 	Text         string `json:"text"`
 	LanguageCode string `json:"languageCode"`
@@ -209,7 +227,7 @@ type TTSRequest struct {
 	Url          string `json:"url"`
 }
 
-// MetaData Items
+// MetaDataResponseItem represents metadata extracted from a web page.
 type MetaDataResponseItem struct {
 	Title       string      `json:"title"`
 	Description string      `json:"description"`
@@ -227,7 +245,7 @@ type MetaDataResponseItem struct {
 	ThemeColor  string      `json:"themeColor,omitempty"`
 }
 
-// WebMedia captures info about images/videos, including optional metadata.
+// WebMedia represents metadata about an image or video found on a web page.
 type WebMedia struct {
 	URL         string   `json:"url"`
 	Alt         string   `json:"alt,omitempty"`

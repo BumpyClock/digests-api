@@ -25,9 +25,9 @@ const layout = "2006-01-02T15:04:05Z07:00"
 
 /**
  * @function createHash
- * @description Returns a SHA-256 hash of the given string s.
+ * @description Computes the SHA-256 hash of a given string.
  * @param {string} s The string to hash.
- * @returns {string} The SHA-256 hash of the string.
+ * @returns {string} The hex-encoded SHA-256 hash of the string.
  */
 func createHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
@@ -36,12 +36,10 @@ func createHash(s string) string {
 
 /**
  * @function parseHTMLContent
- * @description Attempts to parse htmlContent as HTML,
- * extracting and returning only the text content. If parsing fails,
- * the original htmlContent is returned unchanged.
+ * @description Parses HTML content and extracts the text content.
+ *              If parsing fails, it returns the original content.
  * @param {string} htmlContent The HTML content to parse.
  * @returns {string} The extracted text content, or the original htmlContent if parsing fails.
- * @dependencies html.Parse, log
  */
 func parseHTMLContent(htmlContent string) string {
 	doc, err := html.Parse(strings.NewReader(htmlContent))
@@ -69,11 +67,9 @@ func parseHTMLContent(htmlContent string) string {
 
 /**
  * @function getBaseDomain
- * @description Attempts to parse rawURL and returns its scheme + hostname (e.g., https://example.com).
- *              If parsing fails, an empty string is returned.
+ * @description Extracts the base domain (scheme + hostname) from a URL.
  * @param {string} rawURL The URL to parse.
- * @returns {string} The base domain (scheme + hostname) of the URL, or an empty string if parsing fails.
- * @dependencies url.Parse, log
+ * @returns {string} The base domain of the URL, or an empty string if parsing fails.
  */
 func getBaseDomain(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
@@ -95,9 +91,9 @@ func getBaseDomain(rawURL string) string {
  * @param {http.ResponseWriter} w The HTTP response writer.
  * @param {*http.Request} r The HTTP request.
  * @returns {void}
- * @dependencies GetMetaData, log
  */
 func metadataHandler(w http.ResponseWriter, r *http.Request) {
+	// Only accept POST requests
 	if r.Method != http.MethodPost {
 		log.WithFields(logrus.Fields{
 			"method": r.Method,
@@ -106,6 +102,7 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Decode the request body
 	var urls Urls
 	err := json.NewDecoder(r.Body).Decode(&urls)
 	if err != nil {
@@ -116,6 +113,7 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Process each URL concurrently
 	var wg sync.WaitGroup
 	results := make([]MetaDataResponseItem, len(urls.Urls))
 
@@ -126,6 +124,8 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 			log.WithFields(logrus.Fields{
 				"url": url,
 			}).Debug("[metadataHandler] Fetching metadata")
+
+			// Fetch metadata for the URL
 			result, err := GetMetaData(url)
 			if err != nil {
 				log.WithFields(logrus.Fields{
@@ -140,6 +140,7 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 
 	wg.Wait()
 
+	// Encode the results as JSON and send the response
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string][]MetaDataResponseItem{"metadata": results})
 }
@@ -153,9 +154,9 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
  * @param {http.ResponseWriter} w The HTTP response writer.
  * @param {*http.Request} r The HTTP request.
  * @returns {void}
- * @dependencies decodeRequest, processURLs, sendResponse, log
  */
 func parseHandler(w http.ResponseWriter, r *http.Request) {
+	// Only accept POST requests
 	if r.Method != http.MethodPost {
 		log.WithFields(logrus.Fields{
 			"method": r.Method,
@@ -187,15 +188,16 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 		itemsPerPage = req.ItemsPerPage
 	}
 
+	// Process the URLs and send the response
 	responses := processURLs(req.URLs, page, itemsPerPage)
 	sendResponse(w, responses)
 }
 
 /**
  * @function decodeRequest
- * @description Reads and unmarshals the request body into a ParseRequest object.
+ * @description Decodes the request body into a ParseRequest object.
  * @param {*http.Request} r The HTTP request.
- * @returns {ParseRequest, error} The parsed ParseRequest object, or an error if unmarshalling fails.
+ * @returns {(ParseRequest, error)} The parsed ParseRequest object, or an error if unmarshalling fails.
  */
 func decodeRequest(r *http.Request) (ParseRequest, error) {
 	var req ParseRequest
@@ -211,7 +213,6 @@ func decodeRequest(r *http.Request) (ParseRequest, error) {
  * @param {int} page The page number for pagination.
  * @param {int} itemsPerPage The number of items per page for pagination.
  * @returns {[]FeedResponse} A slice of FeedResponse objects, with pagination applied.
- * @dependencies processURL, numWorkers, log
  */
 func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 	var wg sync.WaitGroup
@@ -229,6 +230,8 @@ func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 			log.WithFields(logrus.Fields{
 				"url": feedURL,
 			}).Debug("[processURLs] Processing feed")
+
+			// Process each URL
 			response := processURL(feedURL, page, itemsPerPage)
 			responses <- response
 		}(url)
@@ -244,10 +247,9 @@ func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 
 /**
  * @function isCacheStale
- * @description Checks whether lastRefreshed is older than refresh_timer (in minutes).
+ * @description Checks if the cached data is stale based on the last refresh time and the refresh timer.
  * @param {string} lastRefreshed The timestamp of the last refresh, in the format defined by the 'layout' constant.
  * @returns {bool} True if the cache is stale, false otherwise.
- * @dependencies refresh_timer, time.Parse, time.Since, log
  */
 func isCacheStale(lastRefreshed string) bool {
 	parsedTime, err := time.Parse(layout, lastRefreshed)
@@ -271,13 +273,11 @@ func isCacheStale(lastRefreshed string) bool {
 
 /**
  * @function fetchAndCacheFeed
- * @description Fetches the remote feed from feedURL, merges with existing items (if any),
- *              and caches the final FeedResponse. Returns the FeedResponse or an error if any step fails.
+ * @description Fetches and parses a feed from a given URL, merges it with existing items from the cache,
+ *              and caches the result.
  * @param {string} feedURL The URL of the feed to fetch.
  * @param {string} cacheKey The key to use for caching the feed.
- * @returns {FeedResponse, error} The fetched and processed FeedResponse, or an error if any step fails.
- * @dependencies gofeed.NewParser, processFeedItems, mergeFeedItemsAtParserLevel, getBaseDomain, addURLToList,
- *               cache, GetMetaData, createFeedResponse, log
+ * @returns {(FeedResponse, error)} The fetched and processed FeedResponse, or an error if any step fails.
  */
 func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 	parser := gofeed.NewParser()
@@ -362,15 +362,14 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 
 /**
  * @function processURL
- * @description Checks the cache for a feed URL; if found and not stale, returns the cached feed.
- *              Otherwise, calls fetchAndCacheFeed to retrieve and cache a fresh feed. Pagination is then applied
- *              to the final list of items before returning.
+ * @description Processes a single feed URL. It first checks the cache for the feed.
+ *              If the feed is found in the cache and is not stale, it returns the cached feed.
+ *              Otherwise, it fetches the feed, caches it, and returns the result.
+ *              Pagination is applied to the final list of items before returning.
  * @param {string} rawURL The raw URL of the feed to process.
  * @param {int} page The page number for pagination.
  * @param {int} itemsPerPage The number of items per page for pagination.
  * @returns {FeedResponse} The processed FeedResponse, with pagination applied.
- * @dependencies sanitizeURL, cache, isCacheStale, fetchAndCacheFeed, updateFeedItemsWithThumbnailColors,
- *               applyPagination, log
  */
 func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 	feedURL := sanitizeURL(rawURL)
@@ -443,8 +442,7 @@ func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 
 /**
  * @function applyPagination
- * @description Modifies the feed items in place, slicing to the requested page and itemsPerPage
- *              (e.g. page=2, itemsPerPage=10 => skip first 10 items, return next 10).
+ * @description Applies pagination to a slice of FeedResponseItem objects.
  * @param {*[]FeedResponseItem} items A pointer to a slice of FeedResponseItem objects.
  * @param {int} page The page number to retrieve.
  * @param {int} itemsPerPage The number of items per page.
@@ -480,11 +478,9 @@ func applyPagination(items *[]FeedResponseItem, page, itemsPerPage int) {
 
 /**
  * @function updateFeedItemsWithThumbnailColors
- * @description Iterates over existing items in a feed,
- *              calling updateThumbnailColorForItem to finalize or skip color checks.
+ * @description Updates the thumbnail colors for a slice of FeedResponseItem objects.
  * @param {*[]FeedResponseItem} items A pointer to a slice of FeedResponseItem objects.
  * @returns {[]FeedResponseItem} A new slice of FeedResponseItem objects with updated thumbnail colors.
- * @dependencies updateThumbnailColorForItem
  */
 func updateFeedItemsWithThumbnailColors(items *[]FeedResponseItem) []FeedResponseItem {
 	if items == nil {
@@ -500,11 +496,9 @@ func updateFeedItemsWithThumbnailColors(items *[]FeedResponseItem) []FeedRespons
 
 /**
  * @function updateThumbnailColorForItem
- * @description Checks if we have a cached color for the item’s thumbnail.
- *              If so, sets item.ThumbnailColor. Otherwise, logs that color is not yet available.
+ * @description Updates the thumbnail color for a single FeedResponseItem object.
  * @param {FeedResponseItem} item The FeedResponseItem to update.
  * @returns {FeedResponseItem} The updated FeedResponseItem.
- * @dependencies cache, log
  */
 func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 	var cachedColor RGBColor
@@ -541,10 +535,9 @@ func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 
 /**
  * @function processFeedItems
- * @description Validates feed, concurrency processes each item, returning a slice of FeedResponseItem.
+ * @description Processes a list of feed items concurrently.
  * @param {*gofeed.Feed} feed The parsed feed to process.
  * @returns {[]FeedResponseItem} A slice of processed FeedResponseItem objects.
- * @dependencies processFeedItem, extractColorFromThumbnail_prominentColor, log
  */
 func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 	// Safeguard feed == nil or feed.Items is nil/empty
@@ -599,14 +592,11 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 
 /**
  * @function processFeedItem
- * @description Creates a FeedResponseItem from a single gofeed.Item,
- *              attempting to discover a thumbnail if not set, and sets a default or cached color.
- * @param {*gofeed.Item} item The gofeed.Item to process.
+ * @description Processes a single feed item, extracting relevant information and optionally computing the thumbnail color.
+ * @param {*gofeed.Item} item The feed item to process.
  * @param {string} thumbnail The default thumbnail URL for the feed.
  * @param {RGBColor} thumbnailColor The default thumbnail color for the feed.
  * @returns {FeedResponseItem} The processed FeedResponseItem.
- * @dependencies getItemAuthor, NewThumbnailFinder, FindThumbnailForItem, extractColorFromThumbnail_prominentColor,
- *               parseHTMLContent, standardizeDate, determineItemTypeAndDuration, createHash, cache, log
  */
 func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColor) FeedResponseItem {
 	author := getItemAuthor(item)
@@ -698,11 +688,9 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 
 /**
  * @function standardizeDate
- * @description Parses dateStr in various known formats (RFC3339, RFC1123, etc.).
- *              Returns the date in a standard layout or empty if parse fails.
- * @param {string} dateStr The date string to parse.
+ * @description Standardizes a given date string to the common layout used in the application.
+ * @param {string} dateStr The date string to standardize.
  * @returns {string} The standardized date string, or an empty string if parsing fails.
- * @dependencies time.Parse, time.RFC1123, time.RFC1123Z, time.RFC3339, time.RFC822, time.RFC850, time.ANSIC, log
  */
 func standardizeDate(dateStr string) string {
 	if dateStr == "" {
@@ -732,13 +720,12 @@ func standardizeDate(dateStr string) string {
 
 /**
  * @function createFeedResponse
- * @description Builds a FeedResponse struct from a parsed feed object, feed metadata, and items.
+ * @description Creates a FeedResponse object from a parsed feed, metadata, and processed feed items.
  * @param {*gofeed.Feed} feed The parsed feed.
  * @param {string} feedURL The URL of the feed.
- * @param {MetaDataResponseItem} metaData The metadata for the feed.
+ * @param {MetaDataResponseItem} metaData The metadata associated with the feed.
  * @param {[]FeedResponseItem} feedItems The processed feed items.
  * @returns {FeedResponse} The constructed FeedResponse object.
- * @dependencies createHash, log
  */
 func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
 	if feed == nil {
@@ -763,7 +750,7 @@ func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResp
 		}
 	}
 
-	siteTitle := metaData.Sitename
+	siteTitle := metaData.Title
 	if siteTitle == "" {
 		siteTitle = feed.Title
 	}
@@ -790,8 +777,8 @@ func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResp
 
 /**
  * @function collectResponses
- * @description Reads FeedResponse objects from a channel, returning them as a slice.
- * @param {chan FeedResponse} responses The channel to read from.
+ * @description Collects FeedResponse objects from a channel into a slice.
+ * @param {chan FeedResponse} responses The channel to receive FeedResponse objects from.
  * @returns {[]FeedResponse} A slice of FeedResponse objects.
  */
 func collectResponses(responses chan FeedResponse) []FeedResponse {
@@ -804,11 +791,9 @@ func collectResponses(responses chan FeedResponse) []FeedResponse {
 
 /**
  * @function collectItemResponses
- * @description Reads FeedResponseItem objects from a channel, returning them as a slice.
- *              The items are then sorted by descending Published date.
- * @param {chan FeedResponseItem} itemResponses The channel to read from.
- * @returns {[]FeedResponseItem} A slice of FeedResponseItem objects, sorted by descending Published date.
- * @dependencies time.Parse, log
+ * @description Collects FeedResponseItem objects from a channel into a slice and sorts them by published date.
+ * @param {chan FeedResponseItem} itemResponses The channel to receive FeedResponseItem objects from.
+ * @returns {[]FeedResponseItem} A slice of FeedResponseItem objects sorted by published date in descending order.
  */
 func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseItem {
 	var feedItems []FeedResponseItem
@@ -840,10 +825,10 @@ func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseIte
 
 /**
  * @function sendResponse
- * @description Writes a JSON-encoded Feeds struct to the ResponseWriter.
+ * @description Sends a JSON response containing a list of FeedResponse objects.
  * @param {http.ResponseWriter} w The HTTP response writer.
- * @param {[]FeedResponse} responses The FeedResponse objects to encode and send.
- * @dependencies json.NewEncoder, log
+ * @param {[]FeedResponse} responses The list of FeedResponse objects to send.
+ * @returns {void}
  */
 func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
 	w.Header().Set("Content-Type", "application/json")
@@ -859,9 +844,8 @@ func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
 
 /**
  * @function refreshFeeds
- * @description Retrieves all known feed URLs from the cache and re-processes them
- *              (useful for cron-based or ticker-based refreshing).
- * @dependencies getAllCachedURLs, processURL, log
+ * @description Refreshes all cached feeds by retrieving them from the cache and reprocessing them.
+ * @returns {void}
  */
 func refreshFeeds() {
 	urls := getAllCachedURLs()
@@ -875,9 +859,9 @@ func refreshFeeds() {
 
 /**
  * @function addURLToList
- * @description Ensures the feed URL is tracked in urlList (the list of subscribed or known feeds).
- * @param {string} url The URL to add to the list.
- * @dependencies urlListMutex, stringInSlice
+ * @description Adds a URL to the list of URLs if it's not already present.
+ * @param {string} url The URL to add.
+ * @returns {void}
  */
 func addURLToList(url string) {
 	urlListMutex.Lock()
@@ -890,10 +874,8 @@ func addURLToList(url string) {
 
 /**
  * @function getAllCachedURLs
- * @description Returns all known feed URLs from the cache or from an in-memory list.
- *              If none are found, returns an empty slice.
- * @returns {[]string} A slice of known feed URLs.
- * @dependencies urlListMutex, cache.GetSubscribedListsFromCache, log
+ * @description Retrieves all cached URLs from the cache or the in-memory list.
+ * @returns {[]string} A slice of cached URLs.
  */
 func getAllCachedURLs() []string {
 	urlListMutex.Lock()
@@ -924,10 +906,9 @@ func getAllCachedURLs() []string {
 
 /**
  * @function isValidURL
- * @description Checks if str is a syntactically valid URL with a resolvable host or IP.
+ * @description Checks if a given string is a valid URL with a resolvable host.
  * @param {string} str The string to check.
- * @returns {bool} True if str is a valid URL, false otherwise.
- * @dependencies url.ParseRequestURI, net.ParseIP, strings.Contains
+ * @returns {bool} True if the string is a valid URL, false otherwise.
  */
 func isValidURL(str string) bool {
 	parsedURL, err := url.ParseRequestURI(str)
@@ -947,10 +928,9 @@ func isValidURL(str string) bool {
 
 /**
  * @function sanitizeURL
- * @description Ensures URLs always use https:// if no scheme or if http://
- * @param {string} rawURL The raw URL to sanitize.
+ * @description Sanitizes a URL by ensuring it has an https:// scheme.
+ * @param {string} rawURL The URL to sanitize.
  * @returns {string} The sanitized URL.
- * @dependencies url.Parse
  */
 func sanitizeURL(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
@@ -964,9 +944,9 @@ func sanitizeURL(rawURL string) string {
 
 /**
  * @function getItemAuthor
- * @description Returns an item’s author if set, checking iTunesExt first (for podcasts).
+ * @description Extracts the author of a feed item, prioritizing the iTunes extension author if available.
  * @param {*gofeed.Item} item The feed item.
- * @returns {string} The author of the item, or an empty string if not found.
+ * @returns {string} The author of the feed item, or an empty string if not found.
  */
 func getItemAuthor(item *gofeed.Item) string {
 	if item.ITunesExt != nil && item.ITunesExt.Author != "" {
@@ -980,11 +960,9 @@ func getItemAuthor(item *gofeed.Item) string {
 
 /**
  * @function determineItemTypeAndDuration
- * @description Checks if the feed item is a podcast. If yes,
- *              parses the item’s duration. Returns a type (podcast or article) and the duration in seconds.
+ * @description Determines the type of a feed item (podcast or article) and extracts the duration for podcasts.
  * @param {*gofeed.Item} item The feed item.
- * @returns {string, int} The type of the item ("podcast" or "article") and the duration in seconds.
- * @dependencies parseDuration
+ * @returns {(string, int)} The type of the feed item and the duration in seconds (0 for articles).
  */
 func determineItemTypeAndDuration(item *gofeed.Item) (string, int) {
 	if item.ITunesExt != nil {
@@ -995,10 +973,9 @@ func determineItemTypeAndDuration(item *gofeed.Item) (string, int) {
 
 /**
  * @function parseDuration
- * @description Attempts to convert a time-like string (e.g., 3600 or HH:MM:SS) into total seconds.
+ * @description Parses a duration string in HH:MM:SS format or seconds into an integer representing the duration in seconds.
  * @param {string} durationStr The duration string to parse.
  * @returns {int} The duration in seconds, or 0 if parsing fails.
- * @dependencies strconv.Atoi, strings.Split
  */
 func parseDuration(durationStr string) int {
 	if durationStr == "" {
@@ -1029,10 +1006,10 @@ func parseDuration(durationStr string) int {
 
 /**
  * @function stringInSlice
- * @description Returns true if str is found in the slice list.
+ * @description Checks if a string is present in a slice of strings.
  * @param {string} str The string to search for.
- * @param {[]string} list The slice to search in.
- * @returns {bool} True if str is found in list, false otherwise.
+ * @param {[]string} list The slice of strings to search in.
+ * @returns {bool} True if the string is found in the slice, false otherwise.
  */
 func stringInSlice(str string, list []string) bool {
 	for _, v := range list {
@@ -1045,12 +1022,10 @@ func stringInSlice(str string, list []string) bool {
 
 /**
  * @function mergeFeedItemsAtParserLevel
- * @description Merges old items from the cache with newly fetched items, deduplicating by ID
- *              and retaining only items from within the last 24 hours (cachePeriod). Also updates items if content changed.
+ * @description Merges new feed items with existing cached items, deduplicating by ID and removing old items.
  * @param {string} feedURL The URL of the feed.
- * @param {[]FeedResponseItem} newItems The newly fetched feed items.
- * @returns {[]FeedResponseItem, error} The merged slice of FeedResponseItem objects, or an error if retrieval from cache fails.
- * @dependencies cache.Get, isWithinPeriod, isUpdatedContent, log
+ * @param {[]FeedResponseItem} newItems The new feed items to merge.
+ * @returns {([]FeedResponseItem, error)} The merged slice of FeedResponseItem objects, or an error if retrieval from cache fails.
  */
 func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([]FeedResponseItem, error) {
 	cacheKey := feedURL
@@ -1118,11 +1093,10 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 
 /**
  * @function isWithinPeriod
- * @description Returns true if the FeedResponseItem’s Published date is within 'days' days of now.
+ * @description Checks if a FeedResponseItem's published date is within a certain number of days from the current time.
  * @param {FeedResponseItem} item The FeedResponseItem to check.
  * @param {int} days The number of days to check within.
- * @returns {bool} True if the item's Published date is within the specified period, false otherwise.
- * @dependencies time.Parse, time.Since
+ * @returns {bool} True if the item's published date is within the specified period, false otherwise.
  */
 func isWithinPeriod(item FeedResponseItem, days int) bool {
 	t, err := time.Parse(layout, item.Published)
@@ -1134,12 +1108,10 @@ func isWithinPeriod(item FeedResponseItem, days int) bool {
 
 /**
  * @function isUpdatedContent
- * @description Returns true if newIt is more recent than oldIt by published date
- *              or if newIt’s content differs from oldIt’s content.
+ * @description Checks if a new FeedResponseItem has updated content compared to an old one based on published date and content.
  * @param {FeedResponseItem} oldIt The old FeedResponseItem.
  * @param {FeedResponseItem} newIt The new FeedResponseItem.
  * @returns {bool} True if the new item is more recent or has different content, false otherwise.
- * @dependencies time.Parse
  */
 func isUpdatedContent(oldIt, newIt FeedResponseItem) bool {
 	oldTime, _ := time.Parse(layout, oldIt.Published)

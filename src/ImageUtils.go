@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	_ "image/jpeg"
+	_ "image/png"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -32,23 +34,22 @@ const (
 	collyUserAgent       = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
 )
 
+// ThumbnailFinder is a struct that helps find thumbnails for feed items.
 type ThumbnailFinder struct {
 	cache sync.Map
 }
 
+// NewThumbnailFinder creates a new ThumbnailFinder instance.
 func NewThumbnailFinder() *ThumbnailFinder {
 	return &ThumbnailFinder{}
 }
 
 /**
  * @function GetMetaData
- * @description Fetches a web page (targetURL) using Colly, extracting Open Graph tags
- * and JSON-LD data to produce a MetaDataResponseItem. It also attempts to discover
- * the favicon and domain if not provided by OG or JSON-LD.
- * @param {string} targetURL The URL to visit and parse.
- * @returns {MetaDataResponseItem, error} On success, returns a struct with combined
- * metadata from both OG tags and JSON-LD. Returns an error if the fetch or parse fails.
- * @dependencies colly.NewCollector, colly.UserAgent, c.OnHTML, c.OnRequest, c.Visit, url.Parse, strconv.Atoi, json.Unmarshal, goquery.Selection, log
+ * @description Fetches metadata from a given URL using Colly. It extracts Open Graph tags,
+ *              JSON-LD data, favicon, and domain information.
+ * @param {string} targetURL The URL to fetch metadata from.
+ * @returns {(MetaDataResponseItem, error)} The extracted metadata or an error if any occurred.
  */
 func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 	// Basic validation
@@ -220,13 +221,13 @@ func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 
 /**
  * @function FindThumbnailForItem
- * @description Finds a thumbnail for a given feed item.
+ * @description Finds a thumbnail URL for a given feed item.
  *              It first checks the cache, then enclosures, then content, and finally fetches metadata.
  * @param {*gofeed.Item} item The feed item to find a thumbnail for.
  * @returns {string} The URL of the thumbnail, or an empty string if no thumbnail was found.
- * @dependencies extractThumbnailFromEnclosures, extractThumbnailFromContent, GetMetaData, log
  */
 func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
+	// Check if the thumbnail is cached
 	if thumb, ok := tf.cache.Load(item.Link); ok {
 		log.WithFields(logrus.Fields{
 			"url": item.Link,
@@ -234,6 +235,7 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 		return thumb.(string)
 	}
 
+	// Try to extract the thumbnail from enclosures
 	thumbnail := tf.extractThumbnailFromEnclosures(item.Enclosures)
 	if thumbnail != "" {
 		log.WithFields(logrus.Fields{
@@ -243,6 +245,7 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 		return thumbnail
 	}
 
+	// Try to extract the thumbnail from content
 	thumbnail = tf.extractThumbnailFromContent(item.Content)
 	if thumbnail != "" {
 		log.WithFields(logrus.Fields{
@@ -252,6 +255,7 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 		return thumbnail
 	}
 
+	// Fetch metadata and try to find the thumbnail
 	if item.Link != "" {
 		log.WithFields(logrus.Fields{
 			"url": item.Link,
@@ -281,8 +285,7 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 	return ""
 }
 
-/**
- * @function extractThumbnailFromEnclosures
+/** * @function extractThumbnailFromEnclosures
  * @description Extracts a thumbnail URL from a list of enclosures.
  * @param {[]*gofeed.Enclosure} enclosures The list of enclosures to search.
  * @returns {string} The URL of the first image enclosure found, or an empty string if none were found.
@@ -298,10 +301,9 @@ func (tf *ThumbnailFinder) extractThumbnailFromEnclosures(enclosures []*gofeed.E
 
 /**
  * @function extractThumbnailFromContent
- * @description Extracts a thumbnail URL from HTML content.
+ * @description Extracts a thumbnail URL from HTML content using goquery.
  * @param {string} content The HTML content to search.
  * @returns {string} The URL of the first image found in the content, or an empty string if none were found.
- * @dependencies goquery.NewDocumentFromReader, log
  */
 func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
@@ -321,13 +323,13 @@ func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 /**
  * @function extractColorFromThumbnail_prominentColor
  * @description Extracts the prominent color from an image URL using the prominentcolor library.
- *              It first checks the cache, then validates the URL, downloads the image, decodes it,
+ *              It first checks the cache, then downloads the image, decodes it,
  *              and finally extracts the color using the K-means algorithm.
  * @param {string} imageURL The URL of the image to extract the color from.
- * @returns {r, g, b uint8} The red, green, and blue components of the prominent color.
- * @dependencies httpClient, cache, prominentcolor, image.Decode, log
+ * @returns {(r, g, b uint8)} The red, green, and blue components of the prominent color.
  */
 func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
+	// Recover from any panics during color extraction
 	defer func() {
 		if rec := recover(); rec != nil {
 			log.WithFields(logrus.Fields{
@@ -338,6 +340,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 		}
 	}()
 
+	// Return default color if the image URL is empty
 	if imageURL == "" {
 		return 128, 128, 128
 	}
@@ -366,6 +369,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 		return 128, 128, 128
 	}
 
+	// Download the image with a timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -390,6 +394,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	}
 	defer resp.Body.Close()
 
+	// Decode the image
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
 		log.WithFields(logrus.Fields{
@@ -399,14 +404,17 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
+
 	log.WithFields(logrus.Fields{
 		"url": imageURL,
 	}).Debug("[extractColorFromThumbnail_prominentColor] Starting color extraction")
 
+	// Convert the image to NRGBA format for prominentcolor library
 	bounds := img.Bounds()
 	imgNRGBA := image.NewNRGBA(bounds)
 	draw.Draw(imgNRGBA, bounds, img, bounds.Min, draw.Src)
 
+	// Check if imgNRGBA is nil
 	if imgNRGBA == nil {
 		log.WithFields(logrus.Fields{
 			"url": imageURL,
@@ -415,12 +423,14 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 		return 128, 128, 128
 	}
 
+	// Extract the prominent color using K-means clustering
 	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
 	if err != nil || len(colors) == 0 {
 		log.WithFields(logrus.Fields{
 			"url":   imageURL,
 			"error": err,
 		}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color with background mask")
+		// Retry without background mask
 		colors, err = prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, nil)
 		if err != nil || len(colors) == 0 {
 			log.WithFields(logrus.Fields{
@@ -432,6 +442,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 		}
 	}
 
+	// Cache and return the extracted color
 	if len(colors) > 0 {
 		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
 		log.WithFields(logrus.Fields{
@@ -457,7 +468,6 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
  * @function cacheDefaultColor
  * @description Caches the default color for a given image URL.
  * @param {string} imageURL The URL of the image to cache the default color for.
- * @dependencies cache, log
  */
 func cacheDefaultColor(imageURL string) {
 	cachePrefix := thumbnailColorPrefix
@@ -473,17 +483,16 @@ func cacheDefaultColor(imageURL string) {
 
 /**
  * @function DiscoverFavicon
- * @description Discovers the favicon for a given page URL.
- *              It sends an HTTP GET request to the page, parses the HTML response,
- *              and searches for link elements with rel attributes containing "icon", "shortcut", or "apple-touch-icon".
+ * @description Discovers the favicon for a given page URL by fetching the page and parsing its HTML.
  * @param {string} pageURL The URL of the page to discover the favicon for.
  * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
- * @dependencies httpClient, html.Parse, findFavicon, url.Parse, log
  */
 func DiscoverFavicon(pageURL string) string {
+	// Create a new context with a timeout
 	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
 	defer cancel()
 
+	// Create a new HTTP request with the context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
 		log.WithFields(logrus.Fields{
@@ -493,8 +502,10 @@ func DiscoverFavicon(pageURL string) string {
 		return ""
 	}
 
+	// Set the User-Agent header
 	req.Header.Set("User-Agent", userAgent)
 
+	// Perform the HTTP request
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.WithFields(logrus.Fields{
@@ -505,6 +516,7 @@ func DiscoverFavicon(pageURL string) string {
 	}
 	defer resp.Body.Close()
 
+	// Check the response status code
 	if resp.StatusCode != http.StatusOK {
 		log.WithFields(logrus.Fields{
 			"url":    pageURL,
@@ -513,6 +525,7 @@ func DiscoverFavicon(pageURL string) string {
 		return ""
 	}
 
+	// Parse the HTML response
 	doc, err := html.Parse(resp.Body)
 	if err != nil {
 		log.WithFields(logrus.Fields{
@@ -522,8 +535,10 @@ func DiscoverFavicon(pageURL string) string {
 		return ""
 	}
 
+	// Find the favicon in the parsed HTML
 	favicon := findFavicon(doc)
 
+	// Resolve the favicon URL if it's relative
 	if favicon != "" && !strings.HasPrefix(favicon, "http") {
 		if parsedFaviconURL, err := url.Parse(favicon); err == nil {
 			if baseURL, err := url.Parse(pageURL); err == nil {
@@ -542,6 +557,7 @@ func DiscoverFavicon(pageURL string) string {
  * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
  */
 func findFavicon(n *html.Node) string {
+	// Check if the current node is a link element
 	if n.Type == html.ElementNode && n.Data == "link" {
 		relAttr := ""
 		hrefAttr := ""
@@ -553,6 +569,7 @@ func findFavicon(n *html.Node) string {
 			}
 		}
 
+		// Check if the link element has a rel attribute that indicates a favicon
 		relValues := strings.Fields(relAttr)
 		for _, relValue := range relValues {
 			if relValue == "icon" || relValue == "shortcut" || relValue == "apple-touch-icon" {
@@ -563,6 +580,7 @@ func findFavicon(n *html.Node) string {
 		}
 	}
 
+	// Recursively search child nodes
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		if favicon := findFavicon(c); favicon != "" {
 			return favicon
@@ -574,15 +592,15 @@ func findFavicon(n *html.Node) string {
 
 /**
  * @function DiscoverFaviconWithColly
- * @description Discovers the favicon for a given page URL using colly.
- * @param {*colly.Collector} c The colly collector to use for the request.
+ * @description Discovers the favicon for a given page URL using the Colly library.
+ * @param {*colly.Collector} c The Colly collector to use for the request.
  * @param {string} pageURL The URL of the page to discover the favicon for.
  * @returns {string} The URL of the favicon, or an empty string if no favicon was found.
- * @dependencies colly.HTMLElement, c.OnHTML, c.Visit
  */
 func DiscoverFaviconWithColly(c *colly.Collector, pageURL string) string {
 	var favicon string
 
+	// Set up a Colly OnHTML handler to find link elements with rel attributes
 	c.OnHTML("link[rel]", func(e *colly.HTMLElement) {
 		rel := e.Attr("rel")
 		href := e.Attr("href")
@@ -598,6 +616,7 @@ func DiscoverFaviconWithColly(c *colly.Collector, pageURL string) string {
 		}
 	})
 
+	// Visit the page URL
 	c.Visit(pageURL)
 
 	return favicon

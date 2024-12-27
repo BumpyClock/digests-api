@@ -9,7 +9,13 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// validateURLsHandler handles the /validate endpoint
+/**
+ * @function validateURLsHandler
+ * @description Handles the /validate endpoint, validating a list of URLs.
+ * @param {http.ResponseWriter} w The HTTP response writer.
+ * @param {*http.Request} r The HTTP request.
+ * @returns {void}
+ */
 func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		log.WithFields(logrus.Fields{

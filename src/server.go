@@ -1,3 +1,4 @@
+// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -18,17 +19,17 @@ import (
 )
 
 var (
-	limiter       = rate.NewLimiter(5, 15) // e.g., 5 requests/sec, burst 15
-	cache         digestsCache.Cache
-	log           = logrus.New()
-	urlList       []string
-	urlListMutex  = &sync.Mutex{}
-	refresh_timer = 60
-	redis_address = "localhost:6379"
-	numWorkers    = runtime.NumCPU()
-	cacheMutex    = &sync.Mutex{}
+	limiter       = rate.NewLimiter(5, 15) // Rate limiter: 5 requests/sec, burst 15
+	cache         digestsCache.Cache       // Cache instance
+	log           = logrus.New()           // Logger instance
+	urlList       []string                 // List of URLs to refresh
+	urlListMutex  = &sync.Mutex{}          // Mutex for urlList
+	refresh_timer = 60                     // Refresh timer in minutes
+	redis_address = "localhost:6379"       // Redis server address
+	numWorkers    = runtime.NumCPU()       // Number of worker goroutines
+	cacheMutex    = &sync.Mutex{}          // Mutex for cache operations
 	httpClient    = &http.Client{Timeout: 20 * time.Second}
-	cachePeriod   = 30
+	cachePeriod   = 30 // Cache period in days
 )
 
 func main() {
@@ -37,11 +38,13 @@ func main() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
+	// Command-line flags
 	port := flag.String("port", "8000", "port to run the application on")
 	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
 	redis := flag.String("redis", "localhost:6379", "redis address")
 	flag.Parse()
 
+	// HTTP request multiplexer
 	mux := http.NewServeMux()
 	log.Infof("Number of workers: %v", numWorkers)
 
@@ -72,6 +75,7 @@ func main() {
 	redis_address = *redis
 	log.Info("Opening cache connection...")
 
+	// Attempt to connect to Redis, otherwise use in-memory cache
 	redisCache, redisErr := digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
 	if redisErr != nil {
 		log.Warnf("Failed to open Redis cache (%v); falling back to in-memory cache", redisErr)
@@ -80,6 +84,7 @@ func main() {
 		cache = redisCache
 	}
 
+	// Log cache size
 	cachesize, cacheerr := cache.Count()
 	if cacheerr != nil {
 		log.Errorf("Failed to get cache size: %v", cacheerr)
@@ -91,7 +96,7 @@ func main() {
 	refresh_timer = *timer
 	refreshFeeds()
 
-	// Periodic refresh
+	// Periodic refresh in a separate goroutine
 	go func() {
 		ticker := time.NewTicker(time.Duration(refresh_timer*4) * time.Minute)
 		defer ticker.Stop()
@@ -103,6 +108,7 @@ func main() {
 		}
 	}()
 
+	// Start the server
 	log.Infof("Server is starting on port %v", *port)
 	log.Infof("Refresh timer is %v minutes", refresh_timer)
 	log.Infof("Redis address is %v", redis_address)
@@ -113,7 +119,12 @@ func main() {
 	}
 }
 
-// errorRecoveryMiddleware ensures the server recovers from unexpected panics
+/**
+ * @function errorRecoveryMiddleware
+ * @description Middleware that recovers from panics, logs the error, and sends a 500 response.
+ * @param {http.Handler} next The next handler in the chain.
+ * @returns {http.Handler} The wrapped handler.
+ */
 func errorRecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -126,7 +137,12 @@ func errorRecoveryMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// GzipMiddleware adds gzip compression
+/**
+ * @function GzipMiddleware
+ * @description Middleware that adds gzip compression to responses if the client accepts it.
+ * @param {http.Handler} next The next handler in the chain.
+ * @returns {http.Handler} The wrapped handler.
+ */
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -142,12 +158,20 @@ func GzipMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// gzipResponseWriter is a custom ResponseWriter that wraps the original ResponseWriter
+// and compresses the response body using gzip.
 type gzipResponseWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
 	writer      *gzip.Writer
 }
 
+/**
+ * @function Write
+ * @description Writes data to the gzip writer.
+ * @param {[]byte} b The data to write.
+ * @returns {(int, error)} The number of bytes written and any error that occurred.
+ */
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
 		w.Header().Del("Content-Length")
@@ -157,6 +181,13 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.writer.Write(b)
 }
 
+/**
+ * @function WriteHeader
+ * @description Writes the HTTP status code to the response.
+ *              Closes the gzip writer if it was created.
+ * @param {int} status The HTTP status code.
+ * @returns {void}
+ */
 func (w *gzipResponseWriter) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 	if w.wroteHeader && w.writer != nil {
@@ -164,6 +195,11 @@ func (w *gzipResponseWriter) WriteHeader(status int) {
 	}
 }
 
+/**
+ * @function Flush
+ * @description Flushes the gzip writer and the underlying ResponseWriter.
+ * @returns {void}
+ */
 func (w *gzipResponseWriter) Flush() {
 	if w.wroteHeader {
 		_ = w.writer.Flush()
@@ -173,7 +209,12 @@ func (w *gzipResponseWriter) Flush() {
 	}
 }
 
-// RateLimitMiddleware applies a rate limiter
+/**
+ * @function RateLimitMiddleware
+ * @description Middleware that applies rate limiting to incoming requests.
+ * @param {http.Handler} next The next handler in the chain.
+ * @returns {http.Handler} The wrapped handler.
+ */
 func RateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !limiter.Allow() {
