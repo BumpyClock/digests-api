@@ -16,13 +16,13 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/net/html"
 
 	"github.com/EdlinOrg/prominentcolor"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly"
 	"github.com/mmcdole/gofeed"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -54,9 +54,7 @@ func NewThumbnailFinder() *ThumbnailFinder {
 func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 	// Basic validation
 	if targetURL == "" || targetURL == "http://" || targetURL == "://" || targetURL == "about:blank" {
-		log.WithFields(logrus.Fields{
-			"url": targetURL,
-		}).Error("[GetMetaData] URL is empty or invalid")
+		zap.L().Error("[GetMetaData] URL is empty or invalid", zap.String("url", targetURL))
 		return MetaDataResponseItem{}, fmt.Errorf("URL is empty or invalid")
 	}
 
@@ -209,10 +207,7 @@ func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 
 	// STEP 5: Visit the target page
 	if err := c.Visit(targetURL); err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   targetURL,
-			"error": err,
-		}).Error("[GetMetaData] Error visiting URL")
+		zap.L().Error("[GetMetaData] Error visiting URL", zap.String("url", targetURL), zap.Error(err))
 		return MetaDataResponseItem{}, fmt.Errorf("error visiting URL %s: %w", targetURL, err)
 	}
 
@@ -229,18 +224,14 @@ func GetMetaData(targetURL string) (MetaDataResponseItem, error) {
 func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 	// Check if the thumbnail is cached
 	if thumb, ok := tf.cache.Load(item.Link); ok {
-		log.WithFields(logrus.Fields{
-			"url": item.Link,
-		}).Debug("[FindThumbnailForItem] Found cached thumbnail")
+		zap.L().Debug("[FindThumbnailForItem] Found cached thumbnail", zap.String("url", item.Link))
 		return thumb.(string)
 	}
 
 	// Try to extract the thumbnail from enclosures
 	thumbnail := tf.extractThumbnailFromEnclosures(item.Enclosures)
 	if thumbnail != "" {
-		log.WithFields(logrus.Fields{
-			"url": item.Link,
-		}).Debug("[FindThumbnailForItem] Found thumbnail in enclosures")
+		zap.L().Debug("[FindThumbnailForItem] Found thumbnail in enclosures", zap.String("url", item.Link))
 		tf.cache.Store(item.Link, thumbnail)
 		return thumbnail
 	}
@@ -248,24 +239,17 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 	// Try to extract the thumbnail from content
 	thumbnail = tf.extractThumbnailFromContent(item.Content)
 	if thumbnail != "" {
-		log.WithFields(logrus.Fields{
-			"url": item.Link,
-		}).Debug("[FindThumbnailForItem] Found thumbnail in content")
+		zap.L().Debug("[FindThumbnailForItem] Found thumbnail in content", zap.String("url", item.Link))
 		tf.cache.Store(item.Link, thumbnail)
 		return thumbnail
 	}
 
 	// Fetch metadata and try to find the thumbnail
 	if item.Link != "" {
-		log.WithFields(logrus.Fields{
-			"url": item.Link,
-		}).Debug("[FindThumbnailForItem] Fetching metadata")
+		zap.L().Debug("[FindThumbnailForItem] Fetching metadata", zap.String("url", item.Link))
 		metaData, err := GetMetaData(item.Link)
 		if err != nil {
-			log.WithFields(logrus.Fields{
-				"url":   item.Link,
-				"error": err,
-			}).Error("[FindThumbnailForItem] Error getting metadata")
+			zap.L().Error("[FindThumbnailForItem] Error getting metadata", zap.String("url", item.Link), zap.Error(err))
 			return ""
 		}
 
@@ -273,9 +257,7 @@ func (tf *ThumbnailFinder) FindThumbnailForItem(item *gofeed.Item) string {
 			thumbnail = metaData.Images[0].URL
 		}
 		if thumbnail != "" {
-			log.WithFields(logrus.Fields{
-				"url": item.Link,
-			}).Debug("[FindThumbnailForItem] Found thumbnail in metadata")
+			zap.L().Debug("[FindThumbnailForItem] Found thumbnail in metadata", zap.String("url", item.Link))
 			tf.cache.Store(item.Link, thumbnail)
 			return thumbnail
 		}
@@ -308,9 +290,7 @@ func (tf *ThumbnailFinder) extractThumbnailFromEnclosures(enclosures []*gofeed.E
 func (tf *ThumbnailFinder) extractThumbnailFromContent(content string) string {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[extractThumbnailFromContent] Error parsing content")
+		zap.L().Error("[extractThumbnailFromContent] Error parsing content", zap.Error(err))
 		return ""
 	}
 
@@ -332,10 +312,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Recover from any panics during color extraction
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.WithFields(logrus.Fields{
-				"url":   imageURL,
-				"panic": rec,
-			}).Error("[extractColorFromThumbnail_prominentColor] Recovered from panic")
+			zap.L().Error("[extractColorFromThumbnail_prominentColor] Recovered from panic", zap.String("url", imageURL), zap.Any("panic", rec))
 			r, g, b = 128, 128, 128
 		}
 	}()
@@ -351,20 +328,14 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Attempt to retrieve the color from the cache
 	err := cache.Get(cachePrefix, imageURL, &cachedColor)
 	if err == nil {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"color": cachedColor,
-		}).Debug("[extractColorFromThumbnail_prominentColor] Found cached color")
+		zap.L().Debug("[extractColorFromThumbnail_prominentColor] Found cached color", zap.String("url", imageURL), zap.Any("color", cachedColor))
 		return cachedColor.R, cachedColor.G, cachedColor.B
 	}
 
 	// Validate the image URL
 	parsedURL, err := url.Parse(imageURL)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Invalid image URL")
+		zap.L().Error("[extractColorFromThumbnail_prominentColor] Invalid image URL", zap.String("url", imageURL), zap.Error(err))
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
@@ -375,20 +346,14 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Error creating request")
+		zap.L().Error("[extractColorFromThumbnail_prominentColor] Error creating request", zap.String("url", imageURL), zap.Error(err))
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Failed to download image")
+		zap.L().Error("[extractColorFromThumbnail_prominentColor] Failed to download image", zap.String("url", imageURL), zap.Error(err))
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
@@ -397,17 +362,12 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Decode the image
 	img, _, err := image.Decode(resp.Body)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Failed to decode image")
+		zap.L().Error("[extractColorFromThumbnail_prominentColor] Failed to decode image", zap.String("url", imageURL), zap.Error(err))
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
 
-	log.WithFields(logrus.Fields{
-		"url": imageURL,
-	}).Debug("[extractColorFromThumbnail_prominentColor] Starting color extraction")
+	zap.L().Debug("[extractColorFromThumbnail_prominentColor] Starting color extraction", zap.String("url", imageURL))
 
 	// Convert the image to NRGBA format for prominentcolor library
 	bounds := img.Bounds()
@@ -416,9 +376,7 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 
 	// Check if imgNRGBA is nil
 	if imgNRGBA == nil {
-		log.WithFields(logrus.Fields{
-			"url": imageURL,
-		}).Error("[extractColorFromThumbnail_prominentColor] imgNRGBA is nil")
+		zap.L().Error("[extractColorFromThumbnail_prominentColor] imgNRGBA is nil", zap.String("url", imageURL))
 		cacheDefaultColor(imageURL)
 		return 128, 128, 128
 	}
@@ -426,17 +384,11 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Extract the prominent color using K-means clustering
 	colors, err := prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, prominentcolor.GetDefaultMasks())
 	if err != nil || len(colors) == 0 {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color with background mask")
+		zap.L().Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color with background mask", zap.String("url", imageURL), zap.Error(err))
 		// Retry without background mask
 		colors, err = prominentcolor.KmeansWithAll(prominentcolor.ArgumentDefault, imgNRGBA, prominentcolor.DefaultK, 1, nil)
 		if err != nil || len(colors) == 0 {
-			log.WithFields(logrus.Fields{
-				"url":   imageURL,
-				"error": err,
-			}).Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color without background mask")
+			zap.L().Error("[extractColorFromThumbnail_prominentColor] Error extracting prominent color without background mask", zap.String("url", imageURL), zap.Error(err))
 			cacheDefaultColor(imageURL)
 			return 128, 128, 128
 		}
@@ -445,16 +397,9 @@ func extractColorFromThumbnail_prominentColor(imageURL string) (r, g, b uint8) {
 	// Cache and return the extracted color
 	if len(colors) > 0 {
 		extractedColor := RGBColor{uint8(colors[0].Color.R), uint8(colors[0].Color.G), uint8(colors[0].Color.B)}
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"color": extractedColor,
-		}).Debug("[extractColorFromThumbnail_prominentColor] Extracted color")
+		zap.L().Debug("[extractColorFromThumbnail_prominentColor] Extracted color", zap.String("url", imageURL), zap.Any("color", extractedColor))
 		if err := cache.Set(cachePrefix, imageURL, extractedColor, 24*time.Hour); err != nil {
-			log.WithFields(logrus.Fields{
-				"url":   imageURL,
-				"color": extractedColor,
-				"error": err,
-			}).Error("[extractColorFromThumbnail_prominentColor] Failed to cache color")
+			zap.L().Error("[extractColorFromThumbnail_prominentColor] Failed to cache color", zap.String("url", imageURL), zap.Any("color", extractedColor), zap.Error(err))
 		}
 		return extractedColor.R, extractedColor.G, extractedColor.B
 	}
@@ -474,10 +419,7 @@ func cacheDefaultColor(imageURL string) {
 	defaultColor := RGBColor{defaultColor, defaultColor, defaultColor}
 
 	if err := cache.Set(cachePrefix, imageURL, defaultColor, cacheDuration); err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   imageURL,
-			"error": err,
-		}).Error("[cacheDefaultColor] Failed to cache default color")
+		zap.L().Error("[cacheDefaultColor] Failed to cache default color", zap.String("url", imageURL), zap.Error(err))
 	}
 }
 
@@ -495,10 +437,7 @@ func DiscoverFavicon(pageURL string) string {
 	// Create a new HTTP request with the context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   pageURL,
-			"error": err,
-		}).Error("[DiscoverFavicon] Error creating request")
+		zap.L().Error("[DiscoverFavicon] Error creating request", zap.String("url", pageURL), zap.Error(err))
 		return ""
 	}
 
@@ -508,30 +447,21 @@ func DiscoverFavicon(pageURL string) string {
 	// Perform the HTTP request
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   pageURL,
-			"error": err,
-		}).Error("[DiscoverFavicon] Error fetching page")
+		zap.L().Error("[DiscoverFavicon] Error fetching page", zap.String("url", pageURL), zap.Error(err))
 		return ""
 	}
 	defer resp.Body.Close()
 
 	// Check the response status code
 	if resp.StatusCode != http.StatusOK {
-		log.WithFields(logrus.Fields{
-			"url":    pageURL,
-			"status": resp.Status,
-		}).Error("[DiscoverFavicon] Error fetching page")
+		zap.L().Error("[DiscoverFavicon] Error fetching page", zap.String("url", pageURL), zap.String("status", resp.Status))
 		return ""
 	}
 
 	// Parse the HTML response
 	doc, err := html.Parse(resp.Body)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   pageURL,
-			"error": err,
-		}).Error("[DiscoverFavicon] Error parsing HTML")
+		zap.L().Error("[DiscoverFavicon] Error parsing HTML", zap.String("url", pageURL), zap.Error(err))
 		return ""
 	}
 

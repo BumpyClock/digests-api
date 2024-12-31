@@ -16,3 +16,4 @@ src/tmp/main.exe
 
 # Ignore specific files
 src/concatenated_output.txt
+src/application.log

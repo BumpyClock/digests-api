@@ -13,7 +13,7 @@ import (
 
 	texttospeech "cloud.google.com/go/texttospeech/apiv1"
 	"cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
-	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
 var (
@@ -31,9 +31,7 @@ func initTTSClient() {
 	var err error
 	ttsClient, err = texttospeech.NewClient(context.Background())
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Fatal("Failed to create TTS client")
+		zap.L().Fatal("Failed to create TTS client", zap.Error(err))
 	}
 }
 
@@ -80,13 +78,11 @@ func splitTextIntoChunks(text string, maxChunkSize int) []string {
  * @dependencies cache, log, once, initTTSClient, ttsClient, splitTextIntoChunks
  */
 func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
-	log.Info("Received request to stream audio")
+	zap.L().Info("Received request to stream audio")
 
 	// Ensure it's a POST request
 	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[streamAudioHandler] Invalid method")
+		zap.L().Warn("[streamAudioHandler] Invalid method", zap.String("method", r.Method))
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -95,29 +91,22 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 	var ttsReq TTSRequest
 	err := json.NewDecoder(r.Body).Decode(&ttsReq)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[streamAudioHandler] Error decoding request body")
+		zap.L().Error("[streamAudioHandler] Error decoding request body", zap.Error(err))
 		http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	log.WithFields(logrus.Fields{
-		"text": ttsReq.Text,
-		"url":  ttsReq.Url,
-	}).Debug("[streamAudioHandler] Request received")
+	zap.L().Debug("[streamAudioHandler] Request received", zap.String("text", ttsReq.Text), zap.String("url", ttsReq.Url))
 
 	// Check if text is provided
 	if ttsReq.Text == "" {
-		log.Warn("[streamAudioHandler] No text provided")
+		zap.L().Warn("[streamAudioHandler] No text provided")
 		http.Error(w, "No text provided", http.StatusBadRequest)
 		return
 	} else if ttsReq.Url != "" {
 		// Check if the URL is valid
 		if !(strings.HasPrefix(ttsReq.Url, "http://") || strings.HasPrefix(ttsReq.Url, "https://")) {
-			log.WithFields(logrus.Fields{
-				"url": ttsReq.Url,
-			}).Warn("[streamAudioHandler] Invalid URL provided")
+			zap.L().Warn("[streamAudioHandler] Invalid URL provided", zap.String("url", ttsReq.Url))
 			http.Error(w, "Invalid URL provided", http.StatusBadRequest)
 			return
 		}
@@ -132,9 +121,7 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 	// Check if the audio content is cached
 	err = cache.Get(audio_prefix, cacheKey, &cachedAudio)
 	if err == nil {
-		log.WithFields(logrus.Fields{
-			"key": cacheKey,
-		}).Debug("[streamAudioHandler] Audio content found in cache")
+		zap.L().Debug("[streamAudioHandler] Audio content found in cache", zap.String("key", cacheKey))
 		// Set the headers and write the audio content to the response
 		w.Header().Set("Content-Type", "audio/mpeg")
 		w.Header().Set("Content-Length", fmt.Sprint(len(cachedAudio)))
@@ -142,9 +129,7 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 		// Write the audio content to the response
 		_, err = w.Write(cachedAudio)
 		if err != nil {
-			log.WithFields(logrus.Fields{
-				"error": err,
-			}).Error("[streamAudioHandler] Failed to write audio content to response")
+			zap.L().Error("[streamAudioHandler] Failed to write audio content to response", zap.Error(err))
 		}
 		return
 	}
@@ -152,9 +137,7 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 	// Initialize the TTS client once
 	once.Do(initTTSClient)
 
-	log.WithFields(logrus.Fields{
-		"text": ttsReq.Text,
-	}).Debug("[streamAudioHandler] Text to be synthesized")
+	zap.L().Debug("[streamAudioHandler] Text to be synthesized", zap.String("text", ttsReq.Text))
 	const maxChunkSize = 1000
 
 	// Split text into chunks of up to 1000 characters
@@ -182,13 +165,11 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 		// Perform the text-to-speech request
 		resp, err := ttsClient.SynthesizeSpeech(context.Background(), &req)
 		if err != nil {
-			log.WithFields(logrus.Fields{
-				"error": err,
-			}).Error("[streamAudioHandler] Failed to synthesize speech")
+			zap.L().Error("[streamAudioHandler] Failed to synthesize speech", zap.Error(err))
 			http.Error(w, "Failed to synthesize speech", http.StatusInternalServerError)
 			return
 		} else {
-			log.Debug("[streamAudioHandler] Speech synthesized successfully")
+			zap.L().Debug("[streamAudioHandler] Speech synthesized successfully")
 		}
 
 		// Append the audio content to the buffer
@@ -197,14 +178,9 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Cache the audio content
 	if err := cache.Set(audio_prefix, cacheKey, audioContent.Bytes(), 7*24*time.Hour); err != nil {
-		log.WithFields(logrus.Fields{
-			"key":   cacheKey,
-			"error": err,
-		}).Error("[streamAudioHandler] Failed to cache audio content")
+		zap.L().Error("[streamAudioHandler] Failed to cache audio content", zap.String("key", cacheKey), zap.Error(err))
 	} else {
-		log.WithFields(logrus.Fields{
-			"key": cacheKey,
-		}).Debug("[streamAudioHandler] Audio content cached successfully")
+		zap.L().Debug("[streamAudioHandler] Audio content cached successfully", zap.String("key", cacheKey))
 	}
 
 	// Set the headers and write the audio content to the response
@@ -214,8 +190,6 @@ func streamAudioHandler(w http.ResponseWriter, r *http.Request) {
 	// Write the audio content to the response
 	_, err = w.Write(audioContent.Bytes())
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[streamAudioHandler] Failed to write audio content to response")
+		zap.L().Error("[streamAudioHandler] Failed to write audio content to response", zap.Error(err))
 	}
 }

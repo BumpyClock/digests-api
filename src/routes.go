@@ -4,7 +4,7 @@ package main
 import (
 	"net/http"
 
-	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
 /**
@@ -18,9 +18,7 @@ func errorMiddlewareFunc(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.WithFields(logrus.Fields{
-					"error": err,
-				}).Error("An error occurred")
+				zap.L().Error("An error occurred", zap.Any("error", err))
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()

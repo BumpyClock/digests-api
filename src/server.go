@@ -1,4 +1,3 @@
-// Package main provides the main functionality for the web server.
 package main
 
 import (
@@ -6,7 +5,9 @@ import (
 	"flag"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,39 +15,124 @@ import (
 	digestsCache "digests-app-api/cache"
 
 	"github.com/rs/cors"
-	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/time/rate"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
-	limiter       = rate.NewLimiter(5, 15) // Rate limiter: 5 requests/sec, burst 15
-	cache         digestsCache.Cache       // Cache instance
-	log           = logrus.New()           // Logger instance
-	urlList       []string                 // List of URLs to refresh
-	urlListMutex  = &sync.Mutex{}          // Mutex for urlList
-	refresh_timer = 60                     // Refresh timer in minutes
-	redis_address = "localhost:6379"       // Redis server address
-	numWorkers    = runtime.NumCPU()       // Number of worker goroutines
-	cacheMutex    = &sync.Mutex{}          // Mutex for cache operations
+	limiter       = rate.NewLimiter(5, 15) // e.g., 5 requests/sec, burst 15
+	cache         digestsCache.Cache
+	log           *zap.Logger
+	urlList       []string
+	urlListMutex  = &sync.Mutex{}
+	refresh_timer = 60
+	redis_address = "localhost:6379"
+	numWorkers    = runtime.NumCPU()
+	cacheMutex    = &sync.Mutex{}
 	httpClient    = &http.Client{Timeout: 20 * time.Second}
-	cachePeriod   = 30 // Cache period in days
+	cachePeriod   = 30
 )
 
+func initializeLogger() {
+	// Temporary logger for early messages during initialization
+	tempLogger := zap.NewNop() // No-op logger
+
+	logRetentionDays := flag.String("log-retention", "2", "Number of days to retain log files")
+	// Get log retention days from flag, with error handling
+	retentionDaysStr := *logRetentionDays
+	retentionDays, err := strconv.Atoi(retentionDaysStr)
+	if err != nil {
+		// Use tempLogger here
+		tempLogger.Error("Error parsing log retention days from flag", zap.Error(err))
+		retentionDays = 2
+	}
+
+	// Ensure log file exists
+	logFilePath := "./application.log" // Or a configurable path
+	if _, err := os.Stat(logFilePath); os.IsNotExist(err) {
+		file, err := os.Create(logFilePath)
+		if err != nil {
+			// Use tempLogger here
+			tempLogger.Error("Failed to create log file", zap.Error(err))
+		}
+		if file != nil {
+			file.Close() // Close the file immediately as lumberjack will handle it
+		}
+	}
+
+	// Configure lumberjack for file rotation
+	logFileWriter := &lumberjack.Logger{
+		Filename:   logFilePath,
+		MaxSize:    100, // Megabytes
+		MaxBackups: 5,
+		MaxAge:     retentionDays, // Days
+		Compress:   true,
+	}
+
+	// Determine the logging level based on environment variable or default
+	logLevel := os.Getenv("LOG_LEVEL")
+	var zapLevel zapcore.Level
+	switch strings.ToLower(logLevel) {
+	case "debug":
+		zapLevel = zapcore.DebugLevel
+	case "info":
+		zapLevel = zapcore.InfoLevel
+	case "error":
+		zapLevel = zapcore.ErrorLevel
+	case "production": // Consider production as error level by default
+		zapLevel = zapcore.ErrorLevel
+	default:
+		// Default to debug in development, info otherwise
+		if os.Getenv("GIN_MODE") == "debug" || os.Getenv("GIN_MODE") == "" {
+			zapLevel = zapcore.DebugLevel
+		} else {
+			zapLevel = zapcore.InfoLevel
+		}
+	}
+
+	// Configure console logging
+	consoleEncoderConfig := zap.NewDevelopmentEncoderConfig()
+	consoleEncoder := zapcore.NewJSONEncoder(consoleEncoderConfig) // Or NewConsoleEncoder for human-readable
+
+	// Configure file logging
+	fileEncoderConfig := zap.NewProductionEncoderConfig()
+	fileEncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	fileEncoder := zapcore.NewJSONEncoder(fileEncoderConfig)
+
+	// Create core with different outputs and levels
+	core := zapcore.NewTee(
+		zapcore.NewCore(consoleEncoder, zapcore.Lock(os.Stdout), zapLevel),
+		zapcore.NewCore(fileEncoder, zapcore.AddSync(logFileWriter), zapLevel),
+	)
+
+	// Create the logger with caller information
+	logger := zap.New(core, zap.AddCaller())
+
+	// Replace the global logger
+	log = logger
+
+	// Now that the global logger is set, use zap.L() for subsequent logs
+	zap.ReplaceGlobals(log)
+}
+
 func main() {
+	// Initialize the logger first!
+	initializeLogger()
 	// Start pprof profiling in a goroutine
 	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
+		zap.L().Info("pprof running on port 6060")
+		zap.L().Error("Error starting pprof", zap.Error(http.ListenAndServe("localhost:6060", nil)))
 	}()
 
-	// Command-line flags
 	port := flag.String("port", "8000", "port to run the application on")
 	timer := flag.Int("timer", refresh_timer, "timer to refresh the cache")
 	redis := flag.String("redis", "localhost:6379", "redis address")
 	flag.Parse()
 
-	// HTTP request multiplexer
 	mux := http.NewServeMux()
-	log.Infof("Number of workers: %v", numWorkers)
+	zap.L().Info("Number of workers", zap.Int("workers", numWorkers))
 
 	// Setup routes
 	InitializeRoutes(mux)
@@ -73,63 +159,55 @@ func main() {
 
 	// Cache setup
 	redis_address = *redis
-	log.Info("Opening cache connection...")
+	zap.L().Info("Opening cache connection...")
 
-	// Attempt to connect to Redis, otherwise use in-memory cache
 	redisCache, redisErr := digestsCache.NewRedisCache(redis_address, redis_password, redis_db)
 	if redisErr != nil {
-		log.Warnf("Failed to open Redis cache (%v); falling back to in-memory cache", redisErr)
+		zap.L().Warn("Failed to open Redis cache, falling back to in-memory cache", zap.Error(redisErr))
 		cache = digestsCache.NewGoCache(5*time.Minute, 10*time.Minute)
 	} else {
 		cache = redisCache
 	}
 
-	// Log cache size
 	cachesize, cacheerr := cache.Count()
 	if cacheerr != nil {
-		log.Errorf("Failed to get cache size: %v", cacheerr)
+		zap.L().Error("Failed to get cache size", zap.Error(cacheerr))
 	} else {
-		log.Infof("Cache has %d items", cachesize)
+		zap.L().Info("Cache has items", zap.Int64("items", cachesize))
 	}
 
 	// Set refresh timer from command-line
 	refresh_timer = *timer
 	refreshFeeds()
 
-	// Periodic refresh in a separate goroutine
+	// Periodic refresh
 	go func() {
 		ticker := time.NewTicker(time.Duration(refresh_timer*4) * time.Minute)
 		defer ticker.Stop()
 
 		for range ticker.C {
-			log.Info("Refreshing cache (periodic)...")
+			zap.L().Info("Refreshing cache (periodic)...")
 			refreshFeeds()
-			log.Infof("Cache refreshed at %v, urlList=%v", time.Now().Format(time.RFC3339), urlList)
+			zap.L().Info("Cache refreshed", zap.Time("time", time.Now()), zap.Strings("urlList", urlList))
 		}
 	}()
 
-	// Start the server
-	log.Infof("Server is starting on port %v", *port)
-	log.Infof("Refresh timer is %v minutes", refresh_timer)
-	log.Infof("Redis address is %v", redis_address)
+	zap.L().Info("Server is starting", zap.String("port", *port))
+	zap.L().Info("Refresh timer", zap.Int("timer", refresh_timer))
+	zap.L().Info("Redis address", zap.String("address", redis_address))
 
 	err := http.ListenAndServe(":"+*port, handler)
 	if err != nil {
-		log.Fatalf("Server failed to start: %v", err)
+		zap.L().Fatal("Server failed to start", zap.Error(err))
 	}
 }
 
-/**
- * @function errorRecoveryMiddleware
- * @description Middleware that recovers from panics, logs the error, and sends a 500 response.
- * @param {http.Handler} next The next handler in the chain.
- * @returns {http.Handler} The wrapped handler.
- */
+// errorRecoveryMiddleware ensures the server recovers from unexpected panics
 func errorRecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Errorf("Panic recovered: %v", rec)
+				zap.L().Error("Panic recovered", zap.Any("error", rec))
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
@@ -137,12 +215,7 @@ func errorRecoveryMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-/**
- * @function GzipMiddleware
- * @description Middleware that adds gzip compression to responses if the client accepts it.
- * @param {http.Handler} next The next handler in the chain.
- * @returns {http.Handler} The wrapped handler.
- */
+// GzipMiddleware adds gzip compression
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -158,20 +231,12 @@ func GzipMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// gzipResponseWriter is a custom ResponseWriter that wraps the original ResponseWriter
-// and compresses the response body using gzip.
 type gzipResponseWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
 	writer      *gzip.Writer
 }
 
-/**
- * @function Write
- * @description Writes data to the gzip writer.
- * @param {[]byte} b The data to write.
- * @returns {(int, error)} The number of bytes written and any error that occurred.
- */
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
 		w.Header().Del("Content-Length")
@@ -181,13 +246,6 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.writer.Write(b)
 }
 
-/**
- * @function WriteHeader
- * @description Writes the HTTP status code to the response.
- *              Closes the gzip writer if it was created.
- * @param {int} status The HTTP status code.
- * @returns {void}
- */
 func (w *gzipResponseWriter) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 	if w.wroteHeader && w.writer != nil {
@@ -195,11 +253,6 @@ func (w *gzipResponseWriter) WriteHeader(status int) {
 	}
 }
 
-/**
- * @function Flush
- * @description Flushes the gzip writer and the underlying ResponseWriter.
- * @returns {void}
- */
 func (w *gzipResponseWriter) Flush() {
 	if w.wroteHeader {
 		_ = w.writer.Flush()
@@ -209,12 +262,7 @@ func (w *gzipResponseWriter) Flush() {
 	}
 }
 
-/**
- * @function RateLimitMiddleware
- * @description Middleware that applies rate limiting to incoming requests.
- * @param {http.Handler} next The next handler in the chain.
- * @returns {http.Handler} The wrapped handler.
- */
+// RateLimitMiddleware applies a rate limiter
 func RateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !limiter.Allow() {

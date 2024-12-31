@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/net/html"
 
 	"github.com/mmcdole/gofeed"
-	"github.com/sirupsen/logrus"
 )
 
 // The date/time layout format used throughout the code.
@@ -45,9 +45,7 @@ func parseHTMLContent(htmlContent string) string {
 	doc, err := html.Parse(strings.NewReader(htmlContent))
 	if err != nil {
 		// Fallback to the raw HTML if parse fails
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Warn("[parseHTMLContent] Failed to parse HTML content")
+		zap.L().Warn("[parseHTMLContent] Failed to parse HTML content", zap.Error(err))
 		return htmlContent
 	}
 	var f func(*html.Node)
@@ -74,10 +72,7 @@ func parseHTMLContent(htmlContent string) string {
 func getBaseDomain(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   rawURL,
-			"error": err,
-		}).Warn("[getBaseDomain] Failed to parse URL")
+		zap.L().Warn("[getBaseDomain] Failed to parse URL", zap.String("url", rawURL), zap.Error(err))
 		return ""
 	}
 	return parsedURL.Scheme + "://" + parsedURL.Host
@@ -95,9 +90,7 @@ func getBaseDomain(rawURL string) string {
 func metadataHandler(w http.ResponseWriter, r *http.Request) {
 	// Only accept POST requests
 	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[metadataHandler] Invalid method")
+		zap.L().Warn("[metadataHandler] Invalid method", zap.String("method", r.Method))
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -106,9 +99,7 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 	var urls Urls
 	err := json.NewDecoder(r.Body).Decode(&urls)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[metadataHandler] Error decoding request body")
+		zap.L().Error("[metadataHandler] Error decoding request body", zap.Error(err))
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -121,17 +112,12 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(i int, url string) {
 			defer wg.Done()
-			log.WithFields(logrus.Fields{
-				"url": url,
-			}).Debug("[metadataHandler] Fetching metadata")
+			zap.L().Debug("[metadataHandler] Fetching metadata", zap.String("url", url))
 
 			// Fetch metadata for the URL
 			result, err := GetMetaData(url)
 			if err != nil {
-				log.WithFields(logrus.Fields{
-					"url":   url,
-					"error": err,
-				}).Error("[metadataHandler] Error fetching metadata")
+				zap.L().Error("[metadataHandler] Error fetching metadata", zap.String("url", url), zap.Error(err))
 			} else {
 				results[i] = result
 			}
@@ -158,9 +144,7 @@ func metadataHandler(w http.ResponseWriter, r *http.Request) {
 func parseHandler(w http.ResponseWriter, r *http.Request) {
 	// Only accept POST requests
 	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[parseHandler] Invalid method")
+		zap.L().Warn("[parseHandler] Invalid method", zap.String("method", r.Method))
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -172,9 +156,7 @@ func parseHandler(w http.ResponseWriter, r *http.Request) {
 	// Decode request into ParseRequest
 	req, err := decodeRequest(r)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[parseHandler] Error decoding request body")
+		zap.L().Error("[parseHandler] Error decoding request body", zap.Error(err))
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -227,9 +209,7 @@ func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 				wg.Done()
 				<-sem
 			}()
-			log.WithFields(logrus.Fields{
-				"url": feedURL,
-			}).Debug("[processURLs] Processing feed")
+			zap.L().Debug("[processURLs] Processing feed", zap.String("url", feedURL))
 
 			// Process each URL
 			response := processURL(feedURL, page, itemsPerPage)
@@ -254,18 +234,12 @@ func processURLs(urls []string, page, itemsPerPage int) []FeedResponse {
 func isCacheStale(lastRefreshed string) bool {
 	parsedTime, err := time.Parse(layout, lastRefreshed)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"lastRefreshed": lastRefreshed,
-			"error":         err,
-		}).Error("[isCacheStale] Failed to parse LastRefreshed")
+		zap.L().Error("[isCacheStale] Failed to parse LastRefreshed", zap.String("lastRefreshed", lastRefreshed), zap.Error(err))
 		return false
 	}
 
 	if time.Since(parsedTime) > time.Duration(refresh_timer)*time.Minute {
-		log.WithFields(logrus.Fields{
-			"lastRefreshed": lastRefreshed,
-			"refresh_timer": refresh_timer,
-		}).Info("[isCacheStale] Cache is stale")
+		zap.L().Info("[isCacheStale] Cache is stale", zap.String("lastRefreshed", lastRefreshed), zap.Int("refresh_timer", refresh_timer))
 		return true
 	}
 	return false
@@ -283,10 +257,7 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 	parser := gofeed.NewParser()
 	feed, err := parser.ParseURL(feedURL)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   feedURL,
-			"error": err,
-		}).Error("[fetchAndCacheFeed] Failed to parse feedURL")
+		zap.L().Error("[fetchAndCacheFeed] Failed to parse feedURL", zap.String("url", feedURL), zap.Error(err))
 		return FeedResponse{}, err
 	}
 
@@ -296,10 +267,7 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 	// Merge new items with existing items from the last 24 hours.
 	mergedItems, mergeErr := mergeFeedItemsAtParserLevel(feedURL, newItems)
 	if mergeErr != nil {
-		log.WithFields(logrus.Fields{
-			"url":   feedURL,
-			"error": mergeErr,
-		}).Error("[fetchAndCacheFeed] Failed to merge feed items")
+		zap.L().Error("[fetchAndCacheFeed] Failed to merge feed items", zap.String("url", feedURL), zap.Error(mergeErr))
 		return FeedResponse{}, mergeErr
 	}
 
@@ -317,29 +285,19 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 		if isValidURL(baseDomain) {
 			tempMeta, errGet := GetMetaData(baseDomain)
 			if errGet != nil {
-				log.WithFields(logrus.Fields{
-					"baseDomain": baseDomain,
-					"error":      errGet,
-				}).Warn("[fetchAndCacheFeed] Failed to get metadata")
+				zap.L().Warn("[fetchAndCacheFeed] Failed to get metadata", zap.String("baseDomain", baseDomain), zap.Error(errGet))
 			} else {
 				metaData = tempMeta
 				if errSet := cache.Set(metaData_prefix, baseDomainKey, metaData, 24*time.Hour); errSet != nil {
-					log.WithFields(logrus.Fields{
-						"baseDomain": baseDomain,
-						"error":      errSet,
-					}).Error("[fetchAndCacheFeed] Failed to cache metadata")
+					zap.L().Error("[fetchAndCacheFeed] Failed to cache metadata", zap.String("baseDomain", baseDomain), zap.Error(errSet))
 				}
 			}
 		} else {
 			metaData = MetaDataResponseItem{}
-			log.WithFields(logrus.Fields{
-				"baseDomain": baseDomain,
-			}).Warn("[fetchAndCacheFeed] Invalid baseDomain")
+			zap.L().Warn("[fetchAndCacheFeed] Invalid baseDomain", zap.String("baseDomain", baseDomain))
 		}
 	} else {
-		log.WithFields(logrus.Fields{
-			"baseDomain": baseDomain,
-		}).Debug("[fetchAndCacheFeed] Loaded metadata from cache")
+		zap.L().Debug("[fetchAndCacheFeed] Loaded metadata from cache", zap.String("baseDomain", baseDomain))
 	}
 
 	// Build final FeedResponse from the merged items
@@ -347,16 +305,11 @@ func fetchAndCacheFeed(feedURL, cacheKey string) (FeedResponse, error) {
 
 	// Cache the final feed response
 	if err := cache.Set(feed_prefix, cacheKey, finalFeedResponse, 24*time.Hour); err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   feedURL,
-			"error": err,
-		}).Error("[fetchAndCacheFeed] Failed to cache feed details")
+		zap.L().Error("[fetchAndCacheFeed] Failed to cache feed details", zap.String("url", feedURL), zap.Error(err))
 		return FeedResponse{}, err
 	}
 
-	log.WithFields(logrus.Fields{
-		"url": feedURL,
-	}).Info("[fetchAndCacheFeed] Successfully cached feed details")
+	zap.L().Info("[fetchAndCacheFeed] Successfully cached feed details", zap.String("url", feedURL))
 	return finalFeedResponse, nil
 }
 
@@ -379,21 +332,14 @@ func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 	// Try retrieving from cache first
 	if err := cache.Get(feed_prefix, cacheKey, &cachedFeed); err == nil && cachedFeed.SiteTitle != "" {
 		// Cache hit
-		log.WithFields(logrus.Fields{
-			"url": feedURL,
-		}).Info("[processURL] [Cache Hit] Using cached feed details")
+		zap.L().Info("[processURL] [Cache Hit] Using cached feed details", zap.String("url", feedURL))
 
 		// Check staleness
 		if isCacheStale(cachedFeed.LastRefreshed) {
-			log.WithFields(logrus.Fields{
-				"url": feedURL,
-			}).Info("[processURL] Cache is stale, refreshing in background")
+			zap.L().Info("[processURL] Cache is stale, refreshing in background", zap.String("url", feedURL))
 			go func() {
 				if _, errRefresh := fetchAndCacheFeed(feedURL, cacheKey); errRefresh != nil {
-					log.WithFields(logrus.Fields{
-						"url":   feedURL,
-						"error": errRefresh,
-					}).Error("[processURL] Failed to refresh feed in background")
+					zap.L().Error("[processURL] Failed to refresh feed in background", zap.String("url", feedURL), zap.Error(errRefresh))
 				}
 			}()
 		}
@@ -410,16 +356,11 @@ func processURL(rawURL string, page, itemsPerPage int) FeedResponse {
 	}
 
 	// Cache miss or empty feed
-	log.WithFields(logrus.Fields{
-		"url": feedURL,
-	}).Info("[processURL] [Cache Miss] Fetching fresh feed")
+	zap.L().Info("[processURL] [Cache Miss] Fetching fresh feed", zap.String("url", feedURL))
 
 	newResp, errNew := fetchAndCacheFeed(feedURL, cacheKey)
 	if errNew != nil {
-		log.WithFields(logrus.Fields{
-			"url":   feedURL,
-			"error": errNew,
-		}).Error("[processURL] Failed to fetch and cache feed")
+		zap.L().Error("[processURL] Failed to fetch and cache feed", zap.String("url", feedURL), zap.Error(errNew))
 
 		return FeedResponse{
 			Type:    "unknown",
@@ -506,26 +447,18 @@ func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 
 	switch {
 	case err != nil:
-		log.WithFields(logrus.Fields{
-			"thumbnail": item.Thumbnail,
-		}).Debug("[updateThumbnailColorForItem] No cached color")
+		zap.L().Debug("[updateThumbnailColorForItem] No cached color", zap.String("thumbnail", item.Thumbnail))
 	case item.ThumbnailColorComputed == "set":
 		// Already set
 	case item.ThumbnailColorComputed == "computed":
 		item.ThumbnailColor = cachedColor
 		item.ThumbnailColorComputed = "set"
-		log.WithFields(logrus.Fields{
-			"thumbnail": item.Thumbnail,
-			"color":     item.ThumbnailColor,
-		}).Debug("[updateThumbnailColorForItem] Updated color")
+		zap.L().Debug("[updateThumbnailColorForItem] Updated color", zap.String("thumbnail", item.Thumbnail), zap.Any("color", item.ThumbnailColor))
 	case item.ThumbnailColorComputed == "no":
 		if cachedColor != (RGBColor{}) {
 			item.ThumbnailColor = cachedColor
 			item.ThumbnailColorComputed = "set"
-			log.WithFields(logrus.Fields{
-				"thumbnail": item.Thumbnail,
-				"color":     item.ThumbnailColor,
-			}).Debug("[updateThumbnailColorForItem] Updated color")
+			zap.L().Debug("[updateThumbnailColorForItem] Updated color", zap.String("thumbnail", item.Thumbnail), zap.Any("color", item.ThumbnailColor))
 		}
 	default:
 		// No additional logic
@@ -542,13 +475,11 @@ func updateThumbnailColorForItem(item FeedResponseItem) FeedResponseItem {
 func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 	// Safeguard feed == nil or feed.Items is nil/empty
 	if feed == nil {
-		log.Error("[processFeedItems] feed is nil; returning empty slice")
+		zap.L().Error("[processFeedItems] feed is nil; returning empty slice")
 		return nil
 	}
 	if len(feed.Items) == 0 {
-		log.WithFields(logrus.Fields{
-			"feedTitle": feed.Title,
-		}).Warn("[processFeedItems] feed.Items is empty")
+		zap.L().Warn("[processFeedItems] feed.Items is empty", zap.String("feedTitle", feed.Title))
 		return nil
 	}
 
@@ -567,7 +498,7 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
 
 	for _, item := range feed.Items {
 		if item == nil {
-			log.Warn("[processFeedItems] Skipping nil item")
+			zap.L().Warn("[processFeedItems] Skipping nil item")
 			continue
 		}
 		wg.Add(1)
@@ -645,11 +576,7 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 			r, g, b := extractColorFromThumbnail_prominentColor(thURL)
 			actualColor := RGBColor{r, g, b}
 			if cErr := cache.Set(thumbnailColor_prefix, thURL, actualColor, 24*time.Hour); cErr != nil {
-				log.WithFields(logrus.Fields{
-					"thumbnail": thURL,
-					"color":     actualColor,
-					"error":     cErr,
-				}).Error("[processFeedItem] Failed to cache color")
+				zap.L().Error("[processFeedItem] Failed to cache color", zap.String("thumbnail", thURL), zap.Any("color", actualColor), zap.Error(cErr))
 			}
 		}(thumbnail)
 	}
@@ -694,7 +621,7 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
  */
 func standardizeDate(dateStr string) string {
 	if dateStr == "" {
-		log.Info("[standardizeDate] Empty date string")
+		zap.L().Info("[standardizeDate] Empty date string")
 		return ""
 	}
 	const outputLayout = "2006-01-02T15:04:05Z07:00"
@@ -712,9 +639,7 @@ func standardizeDate(dateStr string) string {
 			return parsedTime.Format(outputLayout)
 		}
 	}
-	log.WithFields(logrus.Fields{
-		"date": dateStr,
-	}).Info("[standardizeDate] Failed to parse date")
+	zap.L().Info("[standardizeDate] Failed to parse date", zap.String("date", dateStr))
 	return ""
 }
 
@@ -729,9 +654,7 @@ func standardizeDate(dateStr string) string {
  */
 func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResponseItem, feedItems []FeedResponseItem) FeedResponse {
 	if feed == nil {
-		log.WithFields(logrus.Fields{
-			"url": feedURL,
-		}).Error("[createFeedResponse] feed is nil")
+		zap.L().Error("[createFeedResponse] feed is nil", zap.String("url", feedURL))
 		return FeedResponse{}
 	}
 
@@ -804,18 +727,12 @@ func collectItemResponses(itemResponses chan FeedResponseItem) []FeedResponseIte
 	sort.Slice(feedItems, func(i, j int) bool {
 		timeI, errI := time.Parse(layout, feedItems[i].Published)
 		if errI != nil {
-			log.WithFields(logrus.Fields{
-				"item":  feedItems[i],
-				"error": errI,
-			}).Error("[collectItemResponses] Failed to parse time for item I")
+			zap.L().Error("[collectItemResponses] Failed to parse time for item I", zap.Any("item", feedItems[i]), zap.Error(errI))
 			return false
 		}
 		timeJ, errJ := time.Parse(layout, feedItems[j].Published)
 		if errJ != nil {
-			log.WithFields(logrus.Fields{
-				"item":  feedItems[j],
-				"error": errJ,
-			}).Error("[collectItemResponses] Failed to parse time for item J")
+			zap.L().Error("[collectItemResponses] Failed to parse time for item J", zap.Any("item", feedItems[j]), zap.Error(errJ))
 			return true
 		}
 		return timeI.After(timeJ)
@@ -836,9 +753,7 @@ func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
 
 	feeds := Feeds{Feeds: responses}
 	if err := enc.Encode(feeds); err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[sendResponse] Failed to encode feed responses")
+		zap.L().Error("[sendResponse] Failed to encode feed responses", zap.Error(err))
 	}
 }
 
@@ -850,9 +765,7 @@ func sendResponse(w http.ResponseWriter, responses []FeedResponse) {
 func refreshFeeds() {
 	urls := getAllCachedURLs()
 	for _, url := range urls {
-		log.WithFields(logrus.Fields{
-			"url": url,
-		}).Info("[refreshFeeds] Refreshing feed")
+		zap.L().Info("[refreshFeeds] Refreshing feed", zap.String("url", url))
 		_ = processURL(url, 1, 20) // or any default paging
 	}
 }
@@ -887,17 +800,12 @@ func getAllCachedURLs() []string {
 		var err error
 		urlList, err = cache.GetSubscribedListsFromCache(feed_prefix)
 		if err != nil {
-			log.WithFields(logrus.Fields{
-				"error": err,
-			}).Warn("[getAllCachedURLs] Failed to get subscribed feeds from cache")
+			zap.L().Warn("[getAllCachedURLs] Failed to get subscribed feeds from cache", zap.Error(err))
 			return nil
 		}
 
 		duration := time.Since(startTime)
-		log.WithFields(logrus.Fields{
-			"urlList":  urlList,
-			"duration": duration,
-		}).Info("[getAllCachedURLs] Loaded urlList from cache")
+		zap.L().Info("[getAllCachedURLs] Loaded urlList from cache", zap.Any("urlList", urlList), zap.Duration("duration", duration))
 	}
 
 	// return a copy
@@ -913,10 +821,7 @@ func getAllCachedURLs() []string {
 func isValidURL(str string) bool {
 	parsedURL, err := url.ParseRequestURI(str)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   str,
-			"error": err,
-		}).Info("[isValidURL] Invalid URL")
+		zap.L().Info("[isValidURL] Invalid URL", zap.String("url", str), zap.Error(err))
 		return false
 	}
 	host := parsedURL.Hostname()
@@ -1034,27 +939,17 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 
 	// Attempt to get an existing feed from the cache
 	if err := cache.Get(feed_prefix, cacheKey, &existingFeedResponse); err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   feedURL,
-			"error": err,
-		}).Error("[mergeFeedItemsAtParserLevel] Error getting existing items")
+		zap.L().Error("[mergeFeedItemsAtParserLevel] Error getting existing items", zap.String("url", feedURL), zap.Error(err))
 		existingItems = nil
 	} else {
 		if existingFeedResponse.Items != nil {
 			existingItems = *existingFeedResponse.Items
-			log.WithFields(logrus.Fields{
-				"url":   feedURL,
-				"count": len(existingItems),
-			}).Debug("[mergeFeedItemsAtParserLevel] Found existing items")
+			zap.L().Debug("[mergeFeedItemsAtParserLevel] Found existing items", zap.String("url", feedURL), zap.Int("count", len(existingItems)))
 		}
 	}
 
 	itemMap := make(map[string]FeedResponseItem)
-	log.WithFields(logrus.Fields{
-		"url":      feedURL,
-		"existing": len(existingItems),
-		"new":      len(newItems),
-	}).Debug("[mergeFeedItemsAtParserLevel] Merging items")
+	zap.L().Debug("[mergeFeedItemsAtParserLevel] Merging items", zap.String("url", feedURL), zap.Int("existing", len(existingItems)), zap.Int("new", len(newItems)))
 	for _, oldItem := range existingItems {
 		if isWithinPeriod(oldItem, cachePeriod) {
 			itemMap[oldItem.ID] = oldItem
@@ -1081,10 +976,7 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 
 	// Store merged items in the cache so subsequent fetches have updated items
 	if err := cache.Set(feed_prefix, feedURL, merged, 24*time.Hour); err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   feedURL,
-			"error": err,
-		}).Error("[mergeFeedItemsAtParserLevel] Failed to cache merged items")
+		zap.L().Error("[mergeFeedItemsAtParserLevel] Failed to cache merged items", zap.String("url", feedURL), zap.Error(err))
 		return nil, err
 	}
 

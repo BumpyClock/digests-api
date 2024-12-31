@@ -6,21 +6,13 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
-/**
- * @function validateURLsHandler
- * @description Handles the /validate endpoint, validating a list of URLs.
- * @param {http.ResponseWriter} w The HTTP response writer.
- * @param {*http.Request} r The HTTP request.
- * @returns {void}
- */
+// validateURLsHandler handles the /validate endpoint
 func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[validateURLsHandler] Invalid method")
+		zap.L().Warn("[validateURLsHandler] Invalid method", zap.String("method", r.Method))
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -28,9 +20,7 @@ func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 	var req URLValidationRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[validateURLsHandler] Error decoding request body")
+		zap.L().Error("[validateURLsHandler] Error decoding request body", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -51,16 +41,9 @@ func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					status = http.StatusText(resp.StatusCode)
 				}
-				log.WithFields(logrus.Fields{
-					"url":    url,
-					"status": status,
-					"error":  err,
-				}).Warn("[validateURLsHandler] URL validation failed")
+				zap.L().Warn("[validateURLsHandler] URL validation failed", zap.String("url", url), zap.String("status", status), zap.Error(err))
 			} else {
-				log.WithFields(logrus.Fields{
-					"url":    url,
-					"status": status,
-				}).Debug("[validateURLsHandler] URL validation successful")
+				zap.L().Debug("[validateURLsHandler] URL validation successful", zap.String("url", url), zap.String("status", status))
 			}
 			statuses[i] = URLStatus{URL: url, Status: status}
 		}(i, url)
@@ -71,9 +54,7 @@ func validateURLsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(statuses)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[validateURLsHandler] Error encoding response")
+		zap.L().Error("[validateURLsHandler] Error encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

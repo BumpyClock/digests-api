@@ -8,7 +8,7 @@ import (
 
 	"math/rand"
 
-	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
 /**
@@ -24,24 +24,20 @@ import (
  */
 func createShareHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[createShareHandler] Invalid method")
+		zap.L().Warn("[createShareHandler] Invalid method", zap.String("method", r.Method))
 		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
 		return
 	}
 	var req createShareRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[createShareHandler] Error decoding request body")
+		zap.L().Error("[createShareHandler] Error decoding request body", zap.Error(err))
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	if len(req.Urls) == 0 {
-		log.Warn("[createShareHandler] No URLs provided")
+		zap.L().Warn("[createShareHandler] No URLs provided")
 		http.Error(w, "No URLs provided", http.StatusBadRequest)
 		response := map[string]string{
 			"status": "error",
@@ -52,9 +48,7 @@ func createShareHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.WithFields(logrus.Fields{
-		"urls": req.Urls,
-	}).Info("[createShareHandler] Create request received")
+	zap.L().Info("[createShareHandler] Create request received", zap.Strings("urls", req.Urls))
 
 	// Generate a random key of maximum 6 characters
 	rand.Seed(time.Now().UnixNano())
@@ -69,11 +63,7 @@ func createShareHandler(w http.ResponseWriter, r *http.Request) {
 	// Save the URLs to the cache
 	err = cache.Set(cacheKey, "urls", req.Urls, 0) // setting exp 0 to keep it forever
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key":   cacheKey,
-			"urls":  req.Urls,
-			"error": err,
-		}).Error("[createShareHandler] Failed to save shared URLs")
+		zap.L().Error("[createShareHandler] Failed to save shared URLs", zap.String("key", cacheKey), zap.Strings("urls", req.Urls), zap.Error(err))
 		http.Error(w, "Failed to save shared URLs", http.StatusInternalServerError)
 		return
 	}
@@ -96,21 +86,17 @@ func createShareHandler(w http.ResponseWriter, r *http.Request) {
  */
 func shareHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[shareHandler] Invalid method")
+		zap.L().Warn("[shareHandler] Invalid method", zap.String("method", r.Method))
 		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
 		return
 	}
-	log.Info("[shareHandler] Share request received")
+	zap.L().Info("[shareHandler] Share request received")
 
 	// Decode the request body
 	var req fetchShareRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[shareHandler] Error decoding request body")
+		zap.L().Error("[shareHandler] Error decoding request body", zap.Error(err))
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -122,10 +108,7 @@ func shareHandler(w http.ResponseWriter, r *http.Request) {
 	var urls []string
 	err = cache.Get(cacheKey, "urls", &urls)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"key":   cacheKey,
-			"error": err,
-		}).Error("[shareHandler] Error getting URLs from cache")
+		zap.L().Error("[shareHandler] Error getting URLs from cache", zap.String("key", cacheKey), zap.Error(err))
 		http.Error(w, "Invalid share link", http.StatusBadRequest)
 		return
 	}
@@ -134,8 +117,5 @@ func shareHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(urls)
 
-	log.WithFields(logrus.Fields{
-		"key":  req.Key,
-		"urls": urls,
-	}).Info("[shareHandler] Share request processed")
+	zap.L().Info("[shareHandler] Share request processed", zap.String("key", req.Key), zap.Strings("urls", urls))
 }

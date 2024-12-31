@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
 /**
@@ -80,22 +80,16 @@ func createPodcastSearchResponse(apiResults []PodcastAPIResponseItem) []PodcastS
  */
 func searchRSS(queryURL string) []FeedSearchResponseItem {
 
-	log.WithFields(logrus.Fields{
-		"queryURL": queryURL,
-	}).Info("[searchRSS] Search request received")
+	zap.L().Info("[searchRSS] Search request received", zap.String("queryURL", queryURL))
 	queryURLCacheKey := createHash(queryURL)
 
 	// Check the cache if the URL has been searched before
-	var cachedResults []FeedSearchResponseItem
+	var cachedResults []FeedSearchAPIResponseItem
 	if err := cache.Get(feedsearch_prefix, queryURLCacheKey, &cachedResults); err == nil {
-		log.WithFields(logrus.Fields{
-			"queryURL": queryURL,
-		}).Info("[searchRSS] Cache hit")
-		return cachedResults
+		zap.L().Info("[searchRSS] Cache hit", zap.String("queryURL", queryURL))
+		return createRSSSearchResponse(cachedResults)
 	} else {
-		log.WithFields(logrus.Fields{
-			"queryURL": queryURL,
-		}).Info("[searchRSS] Cache miss")
+		zap.L().Info("[searchRSS] Cache miss", zap.String("queryURL", queryURL))
 	}
 
 	// Construct the external API URL
@@ -104,11 +98,7 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 	// Make the request to the external API
 	resp, err := httpClient.Get(apiURL)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"queryURL": queryURL,
-			"apiURL":   apiURL,
-			"error":    err,
-		}).Error("[searchRSS] Error making request to external API")
+		zap.L().Error("[searchRSS] Error making request to external API", zap.String("queryURL", queryURL), zap.String("apiURL", apiURL), zap.Error(err))
 		return nil
 	}
 	defer resp.Body.Close()
@@ -116,11 +106,7 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 	// Read the response from the external API
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"queryURL": queryURL,
-			"apiURL":   apiURL,
-			"error":    err,
-		}).Error("[searchRSS] Error reading response from external API")
+		zap.L().Error("[searchRSS] Error reading response from external API", zap.String("queryURL", queryURL), zap.String("apiURL", apiURL), zap.Error(err))
 		return nil
 	}
 
@@ -128,11 +114,7 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 	var searchResults []FeedSearchAPIResponseItem
 	err = json.Unmarshal(body, &searchResults)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"queryURL": queryURL,
-			"apiURL":   apiURL,
-			"error":    err,
-		}).Error("[searchRSS] Error unmarshalling response from external API")
+		zap.L().Error("[searchRSS] Error unmarshalling response from external API", zap.String("queryURL", queryURL), zap.String("apiURL", apiURL), zap.Error(err))
 		return nil
 	}
 
@@ -141,14 +123,9 @@ func searchRSS(queryURL string) []FeedSearchResponseItem {
 
 	// Cache the search results
 	if err := cache.Set(feedsearch_prefix, queryURLCacheKey, responseItems, 24*time.Hour); err != nil {
-		log.WithFields(logrus.Fields{
-			"queryURL": queryURL,
-			"error":    err,
-		}).Error("[searchRSS] Failed to cache search results")
+		zap.L().Error("[searchRSS] Failed to cache search results", zap.String("queryURL", queryURL), zap.Error(err))
 	} else {
-		log.WithFields(logrus.Fields{
-			"queryURL": queryURL,
-		}).Info("[searchRSS] Successfully cached search results")
+		zap.L().Info("[searchRSS] Successfully cached search results", zap.String("queryURL", queryURL))
 	}
 
 	return responseItems
@@ -178,26 +155,18 @@ func calculateAuth(key, secret, datestr string) string {
  * @dependencies calculateAuth, httpClient, log
  */
 func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
-	log.WithFields(logrus.Fields{
-		"query": query,
-	}).Info("[searchPodcast] Search request received")
+	zap.L().Info("[searchPodcast] Search request received", zap.String("query", query))
 	key := os.Getenv("PODCAST_INDEX_API_KEY")
 	secret := os.Getenv("PODCAST_INDEX_API_SECRET")
 	baseURL := "https://api.podcastindex.org/api/1.0/"
 	apiURL := baseURL + "search/byterm?q=" + url.QueryEscape(query)
 
-	log.WithFields(logrus.Fields{
-		"apiURL": apiURL,
-	}).Debug("[searchPodcast] API URL")
+	zap.L().Debug("[searchPodcast] API URL", zap.String("apiURL", apiURL))
 
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"query":  query,
-			"apiURL": apiURL,
-			"error":  err,
-		}).Error("[searchPodcast] Error creating request")
+		zap.L().Error("[searchPodcast] Error creating request", zap.String("query", query), zap.String("apiURL", apiURL), zap.Error(err))
 		return nil
 	}
 	now := strconv.FormatInt(time.Now().Unix(), 10)
@@ -211,34 +180,21 @@ func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"query":  query,
-			"apiURL": apiURL,
-			"error":  err,
-		}).Error("[searchPodcast] Error making request to Podcast Index API")
+		zap.L().Error("[searchPodcast] Error making request to Podcast Index API", zap.String("query", query), zap.String("apiURL", apiURL), zap.Error(err))
 		return nil
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"query":  query,
-			"apiURL": apiURL,
-			"error":  err,
-		}).Error("[searchPodcast] Error reading response from Podcast Index API")
+		zap.L().Error("[searchPodcast] Error reading response from Podcast Index API", zap.String("query", query), zap.String("apiURL", apiURL), zap.Error(err))
 		return nil
 	}
 
 	var searchResults PodcastSearchAPIResponse
 	err = json.Unmarshal(body, &searchResults)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"query":       query,
-			"apiURL":      apiURL,
-			"error":       err,
-			"apiResponse": string(body),
-		}).Error("[searchPodcast] Error unmarshalling response from Podcast Index API")
+		zap.L().Error("[searchPodcast] Error unmarshalling response from Podcast Index API", zap.String("query", query), zap.String("apiURL", apiURL), zap.Error(err), zap.String("apiResponse", string(body)))
 		return nil
 	}
 
@@ -263,7 +219,7 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 	case "rss":
 		queryURL := r.URL.Query().Get("q")
 		if queryURL == "" {
-			log.Warn("[searchHandler] No url provided for RSS search")
+			zap.L().Warn("[searchHandler] No url provided for RSS search")
 			http.Error(w, "No url provided", http.StatusBadRequest)
 			response := map[string]string{
 				"status": "error",
@@ -280,7 +236,7 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 	case "podcast":
 		query := r.URL.Query().Get("q")
 		if query == "" {
-			log.Warn("[searchHandler] No query provided for podcast search")
+			zap.L().Warn("[searchHandler] No query provided for podcast search")
 			http.Error(w, "No query provided", http.StatusBadRequest)
 			response := map[string]string{
 				"status": "error",
@@ -295,9 +251,7 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(searchResults)
 
 	default:
-		log.WithFields(logrus.Fields{
-			"type": searchType,
-		}).Warn("[searchHandler] No or invalid type provided")
+		zap.L().Warn("[searchHandler] No or invalid type provided", zap.String("type", searchType))
 		http.Error(w, "No or invalid type provided", http.StatusBadRequest)
 		response := map[string]string{
 			"status": "error",

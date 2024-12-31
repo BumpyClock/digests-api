@@ -8,7 +8,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
-	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
 // SQLiteCache implements the Cache interface using a local SQLite database.
@@ -16,25 +16,19 @@ type SQLiteCache struct {
 	db *sql.DB
 }
 
-// ErrSQLCacheMiss is the error returned when a key is not found or expired in the SQLite cache.
 var ErrSQLCacheMiss = errors.New("sqlite cache: key not found or expired")
 
-/**
- * @function NewSQLiteCache
- * @description Creates a new SQLiteCache instance and initializes the database.
- * @param {string} dbPath The path to the SQLite database file.
- * @returns {(*SQLiteCache, error)} A pointer to the new SQLiteCache and an error if initialization failed.
- */
+// NewSQLiteCache creates a new SQLiteCache instance and initializes the database schema.
 func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		logrus.WithField("dbPath", dbPath).Error("Failed to open SQLite database")
+		zap.L().Error("Failed to open SQLite database", zap.String("dbPath", dbPath), zap.Error(err))
 		return nil, err
 	}
 
 	// Enable WAL mode for better performance
 	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
-		logrus.WithError(err).Error("Failed to enable WAL mode")
+		zap.L().Error("Failed to enable WAL mode", zap.Error(err))
 	}
 
 	// Create the cache table if it doesn't exist
@@ -47,30 +41,21 @@ func NewSQLiteCache(dbPath string) (*SQLiteCache, error) {
 	CREATE INDEX IF NOT EXISTS idx_expiration ON cache (expiration);
 	`
 	if _, err := db.Exec(schema); err != nil {
-		logrus.WithField("error", err).Error("Failed to create cache table in SQLite")
+		zap.L().Error("Failed to create cache table in SQLite", zap.Error(err))
 		return nil, err
 	}
 
 	return &SQLiteCache{db: db}, nil
 }
 
-/**
- * @function Set
- * @description Inserts or updates a key-value pair in the SQLite database with an expiration time.
- * @param {string} prefix The prefix for the key.
- * @param {string} key The key to store the value under.
- * @param {interface{}} value The value to store.
- * @param {time.Duration} expiration The expiration time for the key-value pair.
- * @returns {error} An error if the operation failed.
- */
+// Set inserts or updates a key in the SQLite database with an expiration time.
+// prefix:key is used as the primary key.
 func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expiration time.Duration) error {
 	fullKey := prefix + ":" + key
 
 	valBytes, err := json.Marshal(value)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"key": key,
-		}).Error("Failed to marshal value for key (SQLite)")
+		zap.L().Error("Failed to marshal value for key (SQLite)", zap.String("key", key), zap.Error(err))
 		return err
 	}
 
@@ -83,7 +68,7 @@ func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expirati
 	// Use a transaction for better performance
 	tx, err := c.db.Begin()
 	if err != nil {
-		logrus.WithError(err).Error("Failed to begin transaction")
+		zap.L().Error("Failed to begin transaction", zap.Error(err))
 		return err
 	}
 	defer tx.Rollback() // Rollback is safe to call even if the transaction was committed
@@ -98,29 +83,20 @@ func (c *SQLiteCache) Set(prefix string, key string, value interface{}, expirati
 
 	_, err = tx.Exec(stmt, fullKey, valBytes, expirationUnix)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"key":   fullKey,
-			"error": err,
-		}).Error("Failed to set key in SQLite cache")
+		zap.L().Error("Failed to set key in SQLite cache", zap.String("key", fullKey), zap.Error(err))
 		return err
 	}
 
 	if err := tx.Commit(); err != nil {
-		logrus.WithError(err).Error("Failed to commit transaction")
+		zap.L().Error("Failed to commit transaction", zap.Error(err))
 		return err
 	}
 
 	return nil
 }
 
-/**
- * @function Get
- * @description Retrieves a value from the SQLite database by key.
- * @param {string} prefix The prefix for the key.
- * @param {string} key The key to retrieve the value for.
- * @param {interface{}} dest A pointer to the variable to store the retrieved value in.
- * @returns {error} An error if the key is not found, expired, or the value could not be unmarshaled.
- */
+// Get retrieves a key from the SQLite database and unmarshals it into dest.
+// If the key is expired or missing, it returns an error.
 func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 	fullKey := prefix + ":" + key
 
@@ -139,35 +115,24 @@ func (c *SQLiteCache) Get(prefix string, key string, dest interface{}) error {
 	err := row.Scan(&data, &expiration)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			logrus.WithFields(logrus.Fields{
-				"key": fullKey,
-			}).Debug("Key not found in SQLite cache")
+			zap.L().Debug("Key not found in SQLite cache", zap.String("key", fullKey))
 			return ErrCacheMiss
 		}
-		logrus.WithFields(logrus.Fields{
-			"key":   fullKey,
-			"error": err,
-		}).Error("Failed to read key from SQLite cache")
+		zap.L().Error("Failed to read key from SQLite cache", zap.String("key", fullKey), zap.Error(err))
 		return err
 	}
 
 	// Unmarshal data into dest
 	if err := json.Unmarshal(data, dest); err != nil {
-		logrus.WithFields(logrus.Fields{
-			"key": fullKey,
-		}).Error("Failed to unmarshal value from SQLite cache")
+		zap.L().Error("Failed to unmarshal value from SQLite cache", zap.String("key", fullKey), zap.Error(err))
 		return err
 	}
 
 	return nil
 }
 
-/**
- * @function GetSubscribedListsFromCache
- * @description Retrieves all subscribed lists from the SQLite database that match the given prefix.
- * @param {string} prefix The prefix to filter keys by.
- * @returns {([]string, error)} A slice of feed URLs and an error if any occurred.
- */
+// GetSubscribedListsFromCache scans the cache table for records that start with prefix:
+// and attempts to unmarshal them into a FeedItem to extract the FeedUrl.
 func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, error) {
 	var urls []string
 
@@ -177,9 +142,7 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 	`
 	rows, err := c.db.Query(stmt, prefix+":%", time.Now().Unix())
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("Failed to query SQLite cache for subscribed lists")
+		zap.L().Error("Failed to query SQLite cache for subscribed lists", zap.Error(err))
 		return nil, err
 	}
 	defer rows.Close()
@@ -190,18 +153,13 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 			data    []byte
 		)
 		if err := rows.Scan(&fullKey, &data); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"error": err,
-			}).Error("Failed to scan SQLite cache row")
+			zap.L().Error("Failed to scan SQLite cache row", zap.Error(err))
 			continue
 		}
 
 		var feedItem FeedItem
 		if err := json.Unmarshal(data, &feedItem); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"key":   fullKey,
-				"error": err,
-			}).Error("Failed to unmarshal value from SQLite cache")
+			zap.L().Error("Failed to unmarshal value from SQLite cache", zap.String("key", fullKey), zap.Error(err))
 			continue
 		}
 
@@ -211,25 +169,15 @@ func (c *SQLiteCache) GetSubscribedListsFromCache(prefix string) ([]string, erro
 	}
 
 	if err := rows.Err(); err != nil {
-		logrus.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("Error iterating SQLite cache rows")
+		zap.L().Error("Error iterating SQLite cache rows", zap.Error(err))
 		return nil, err
 	}
 
 	return urls, nil
 }
 
-/**
- * @function SetFeedItems
- * @description Sets the feed items for a given key, merging with existing items if any.
- *              Deduplication is performed based on the GUID of the feed items.
- * @param {string} prefix The prefix for the cache key.
- * @param {string} key The cache key.
- * @param {[]FeedItem} newItems The new feed items to add.
- * @param {time.Duration} expiration The expiration time for the cache entry.
- * @returns {error} An error if any occurred during the operation.
- */
+// SetFeedItems fetches existing feed items from the cache, deduplicates them with newItems,
+// then updates the cache with the merged slice.
 func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedItem, expiration time.Duration) error {
 	var existingItems []FeedItem
 	err := c.Get(prefix, key, &existingItems)
@@ -254,19 +202,13 @@ func (c *SQLiteCache) SetFeedItems(prefix string, key string, newItems []FeedIte
 	return c.Set(prefix, key, uniqueItems, expiration)
 }
 
-/**
- * @function Count
- * @description Returns the total number of items in the SQLite cache, including expired items.
- * @returns {(int64, error)} The number of items and an error if the operation failed.
- */
+// Count returns the total number of items in the cache (including expired items).
 func (c *SQLiteCache) Count() (int64, error) {
 	stmt := `SELECT COUNT(*) FROM cache;`
 	var count int64
 	err := c.db.QueryRow(stmt).Scan(&count)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("Failed to count items in SQLite cache")
+		zap.L().Error("Failed to count items in SQLite cache", zap.Error(err))
 		return 0, err
 	}
 	return count, nil

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 
 	readability "github.com/go-shiori/go-readability"
 )
@@ -19,14 +19,12 @@ import (
  *              It returns a ReaderViewResult containing the parsed content or an error.
  * @param {string} url The URL to retrieve the reader view for.
  * @returns {ReaderViewResult} A struct containing the reader view result or an error.
+ * @dependencies getReaderView, log
  */
 func getReaderViewResult(url string) ReaderViewResult {
 	readerView, err := getReaderView(url)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   url,
-			"error": err,
-		}).Error("[ReaderView] Error retrieving content")
+		zap.L().Error("[ReaderView] Error retrieving content", zap.String("url", url), zap.Error(err))
 		return ReaderViewResult{
 			URL:    url,
 			Status: "error",
@@ -53,28 +51,22 @@ func getReaderViewResult(url string) ReaderViewResult {
  * @param {http.ResponseWriter} w The HTTP response writer.
  * @param {*http.Request} r The HTTP request.
  * @returns {void}
+ * @dependencies getReaderViewResult, cache, createHash, log
  */
 func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
-	// Only accept POST requests
 	if r.Method != http.MethodPost {
-		log.WithFields(logrus.Fields{
-			"method": r.Method,
-		}).Warn("[ReaderView] Invalid method")
+		zap.L().Warn("[ReaderView] Invalid method", zap.String("method", r.Method))
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
-	// Decode the request body
 	var urls Urls
 	if err := json.NewDecoder(r.Body).Decode(&urls); err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[ReaderView] Error decoding request body")
+		zap.L().Error("[ReaderView] Error decoding request body", zap.Error(err))
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
-	// Process each URL concurrently
 	var wg sync.WaitGroup
 	results := make([]ReaderViewResult, len(urls.Urls))
 
@@ -86,39 +78,27 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
 			cacheKey := createHash(url)
 			var result ReaderViewResult
 
-			// Check if the result is cached
 			if err := cache.Get(readerView_prefix, cacheKey, &result); err != nil {
-				log.WithFields(logrus.Fields{
-					"url": url,
-				}).Info("[ReaderView] Cache miss")
-				// If not cached, retrieve the reader view and cache the result
+				zap.L().Info("[ReaderView] Cache miss", zap.String("url", url))
 				result = getReaderViewResult(url)
 				if len(result.TextContent) < 100 {
 					result.TextContent = `<div id="readability-page-1" class="page"><p id="cmsg">Error getting reader view or site requires subscription. Please open the link in a new tab.</p></div>`
 					result.ReaderView = result.TextContent
 				}
 				if err := cache.Set(readerView_prefix, cacheKey, result, 24*time.Hour); err != nil {
-					log.WithFields(logrus.Fields{
-						"url":   url,
-						"error": err,
-					}).Error("[ReaderView] Failed to cache reader view")
+					zap.L().Error("[ReaderView] Failed to cache reader view", zap.String("url", url), zap.Error(err))
 				}
 			} else {
-				log.WithFields(logrus.Fields{
-					"url": url,
-				}).Info("[ReaderView] Cache hit")
+				zap.L().Info("[ReaderView] Cache hit", zap.String("url", url))
 			}
 			results[i] = result
 		}(i, url)
 	}
 	wg.Wait()
 
-	// Encode the results as JSON and send the response
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(results); err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("[ReaderView] Failed to encode JSON")
+		zap.L().Error("[ReaderView] Failed to encode JSON", zap.Error(err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
@@ -128,15 +108,13 @@ func getReaderViewHandler(w http.ResponseWriter, r *http.Request) {
  * @description Retrieves the reader view of a given URL using the go-readability library.
  *              It sets a timeout for the request and returns the parsed article or an error.
  * @param {string} url The URL to retrieve the reader view for.
- * @returns {(readability.Article, error)} The parsed article or an error.
+ * @returns {readability.Article, error} The parsed article or an error.
+ * @dependencies readability.FromURL, log
  */
 func getReaderView(url string) (readability.Article, error) {
 	article, err := readability.FromURL(url, 30*time.Second)
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"url":   url,
-			"error": err,
-		}).Error("[ReaderView] Failed to parse URL")
+		zap.L().Error("[ReaderView] Failed to parse URL", zap.String("url", url), zap.Error(err))
 		return readability.Article{}, fmt.Errorf("failed to parse URL: %w", err)
 	}
 	return article, nil
