@@ -531,7 +531,7 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
  */
 func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColor) FeedResponseItem {
 	author := getItemAuthor(item)
-	categories := strings.Join(item.Categories, ", ")
+	categories := item.Categories
 
 	// Possibly override the feed-level thumbnail with item enclosures
 	if len(item.Enclosures) > 0 {
@@ -693,7 +693,7 @@ func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResp
 		Author:        feed.Author,
 		Language:      feed.Language,
 		Favicon:       thumbnail,
-		Categories:    strings.Join(feed.Categories, ", "),
+		Categories:    feed.Categories,
 		Items:         &feedItems,
 	}
 }
