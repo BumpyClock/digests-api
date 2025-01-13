@@ -32,7 +32,7 @@ var (
 	numWorkers    = runtime.NumCPU()
 	cacheMutex    = &sync.Mutex{}
 	httpClient    = &http.Client{Timeout: 20 * time.Second}
-	cachePeriod   = 30
+	cachePeriod   = 365
 )
 
 func initializeLogger() {

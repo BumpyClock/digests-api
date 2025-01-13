@@ -51,7 +51,7 @@ type FeedResponseItem struct {
 	Content                string                      `json:"content"`
 	Created                string                      `json:"created"`
 	Content_Encoded        string                      `json:"content_encoded"`
-	Categories             []string                    `json:"categories"`
+	Categories             string                      `json:"categories"`
 	Enclosures             []*gofeed.Enclosure         `json:"enclosures"`
 	Thumbnail              string                      `json:"thumbnail"`
 	ThumbnailColor         RGBColor                    `json:"thumbnailColor"`
@@ -79,7 +79,7 @@ type FeedResponse struct {
 	Language      string              `json:"language"`
 	Favicon       string              `json:"favicon"`
 	SiteImage     string              `json:"siteImage,omitempty"`
-	Categories    []string            `json:"categories"`
+	Categories    string              `json:"categories"`
 	Items         *[]FeedResponseItem `json:"items,omitempty"`
 }
 

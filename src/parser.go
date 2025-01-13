@@ -531,9 +531,8 @@ func processFeedItems(feed *gofeed.Feed) []FeedResponseItem {
  */
 func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColor) FeedResponseItem {
 	author := getItemAuthor(item)
-	categories := item.Categories
+	categories := strings.Join(item.Categories, ", ")
 
-	// Possibly override the feed-level thumbnail with item enclosures
 	if len(item.Enclosures) > 0 {
 		for _, enclosure := range item.Enclosures {
 			if enclosure.URL != "" && strings.HasPrefix(enclosure.Type, "image/") {
@@ -593,9 +592,16 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 	// Identify if it's a podcast and parse duration if so
 	itemType, duration := determineItemTypeAndDuration(item)
 
+	var itemGUID string
+	if item.GUID != "" {
+		itemGUID = item.GUID
+	} else {
+		itemGUID = createHash(item.Link)
+	}
+
 	return FeedResponseItem{
 		Type:                   itemType,
-		ID:                     createHash(item.Link),
+		ID:                     itemGUID,
 		Title:                  item.Title,
 		Description:            desc,
 		Link:                   item.Link,
@@ -673,10 +679,14 @@ func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResp
 		}
 	}
 
-	siteTitle := metaData.Title
+	siteTitle := metaData.Sitename
+	if siteTitle == "" {
+		siteTitle = metaData.Title
+	}
 	if siteTitle == "" {
 		siteTitle = feed.Title
 	}
+	categories := strings.Join(feed.Categories, ", ")
 
 	return FeedResponse{
 		Status:        "ok",
@@ -693,7 +703,7 @@ func createFeedResponse(feed *gofeed.Feed, feedURL string, metaData MetaDataResp
 		Author:        feed.Author,
 		Language:      feed.Language,
 		Favicon:       thumbnail,
-		Categories:    feed.Categories,
+		Categories:    categories,
 		Items:         &feedItems,
 	}
 }
@@ -939,7 +949,7 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 
 	// Attempt to get an existing feed from the cache
 	if err := cache.Get(feed_prefix, cacheKey, &existingFeedResponse); err != nil {
-		zap.L().Error("[mergeFeedItemsAtParserLevel] Error getting existing items", zap.String("url", feedURL), zap.Error(err))
+		zap.L().Debug("[mergeFeedItemsAtParserLevel] No existing feed items found", zap.String("url", feedURL), zap.Error(err))
 		existingItems = nil
 	} else {
 		if existingFeedResponse.Items != nil {
@@ -969,6 +979,8 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 		}
 	}
 
+	zap.L().Debug("[mergeFeedItemsAtParserLevel] Merged items", zap.String("url", feedURL), zap.Int("count", len(itemMap)))
+
 	merged := make([]FeedResponseItem, 0, len(itemMap))
 	for _, v := range itemMap {
 		merged = append(merged, v)
@@ -995,7 +1007,9 @@ func isWithinPeriod(item FeedResponseItem, days int) bool {
 	if err != nil {
 		return false
 	}
-	return time.Since(t) <= time.Duration(days)*24*time.Hour
+	bool := time.Since(t) <= time.Duration(days)*24*time.Hour
+	zap.L().Debug("[isWithinPeriod] Checking item", zap.String("Link", item.Link), zap.String("published", item.Published), zap.Bool("within", bool))
+	return bool
 }
 
 /**
