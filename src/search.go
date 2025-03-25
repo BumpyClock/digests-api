@@ -257,7 +257,6 @@ func searchPodcast(_ *http.Request, query string) []PodcastSearchResponseItem {
  * @dependencies searchRSS, searchPodcast, log
  */
 func searchHandler(w http.ResponseWriter, r *http.Request) {
-	// Get the 'url' query parameter
 	searchType := r.URL.Query().Get("type")
 	switch searchType {
 	case "rss":

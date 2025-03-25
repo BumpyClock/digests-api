@@ -500,7 +500,7 @@ func updateFeedItemsWithThumbnailColors(items *[]FeedResponseItem) []FeedRespons
 
 /**
  * @function updateThumbnailColorForItem
- * @description Checks if we have a cached color for the item’s thumbnail.
+ * @description Checks if we have a cached color for the item's thumbnail.
  *              If so, sets item.ThumbnailColor. Otherwise, logs that color is not yet available.
  * @param {FeedResponseItem} item The FeedResponseItem to update.
  * @returns {FeedResponseItem} The updated FeedResponseItem.
@@ -676,9 +676,15 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 	// Identify if it's a podcast and parse duration if so
 	itemType, duration := determineItemTypeAndDuration(item)
 
-	return FeedResponseItem{
-		Type:                   itemType,
-		ID:                     createHash(item.Link),
+	// Create response item
+	responseItem := FeedResponseItem{
+		Type: itemType,
+		ID: func() string {
+			if item.GUID != "" {
+				return item.GUID
+			}
+			return createHash(item.Link)
+		}(),
 		Title:                  item.Title,
 		Description:            desc,
 		Link:                   item.Link,
@@ -694,6 +700,205 @@ func processFeedItem(item *gofeed.Item, thumbnail string, thumbnailColor RGBColo
 		ThumbnailColor:         thumbnailColor,
 		ThumbnailColorComputed: thumbnailColorComputed,
 	}
+
+	// Add podcast-specific details if available
+	if item.ITunesExt != nil {
+		// Convert string fields to appropriate types
+		block := item.ITunesExt.Block == "yes"
+		explicit := item.ITunesExt.Explicit == "yes" || item.ITunesExt.Explicit == "true"
+		isClosedCaptioned := item.ITunesExt.IsClosedCaptioned == "yes"
+
+		episode, _ := strconv.Atoi(item.ITunesExt.Episode)
+		season, _ := strconv.Atoi(item.ITunesExt.Season)
+		order, _ := strconv.Atoi(item.ITunesExt.Order)
+
+		podcastDetails := &PodcastEpisodeDetails{
+			Block:             block,
+			Duration:          duration,
+			Explicit:          explicit,
+			Keywords:          item.ITunesExt.Keywords,
+			Subtitle:          item.ITunesExt.Subtitle,
+			Summary:           item.ITunesExt.Summary,
+			Image:             item.ITunesExt.Image,
+			IsClosedCaptioned: isClosedCaptioned,
+			Episode:           episode,
+			Season:            season,
+			Order:             order,
+			EpisodeType:       item.ITunesExt.EpisodeType,
+		}
+
+		// Check for podcast transcript information in Extensions
+		if len(item.Extensions) > 0 {
+			if podcastExt, ok := item.Extensions["podcast"]; ok && len(podcastExt) > 0 {
+				var transcripts []PodcastTranscriptsDetails
+
+				// Check if transcript array exists in the podcast extension
+				if transcriptItems, ok := podcastExt["transcript"]; ok && len(transcriptItems) > 0 {
+					for _, transcriptItem := range transcriptItems {
+						// Extract transcript details from attributes
+						if attrs, ok := transcriptItem.Attrs, true; ok {
+							url := attrs["url"]
+							typeStr := attrs["type"]
+							language := attrs["language"]
+
+							if url != "" && typeStr != "" {
+								// Map the type string to our PodcastTranscriptsType
+								var transcriptType PodcastTranscriptsType
+								switch typeStr {
+								case "application/srt":
+									transcriptType = ApplicationSRT
+								case "application/vtt":
+									transcriptType = ApplicationVTT
+								case "text/plain":
+									transcriptType = TextPlain
+								case "text/html":
+									transcriptType = TextHTML
+								default:
+									transcriptType = PodcastTranscriptsType(typeStr)
+								}
+
+								// Create and add transcript details
+								transcript := PodcastTranscriptsDetails{
+									Url:      url,
+									Type:     transcriptType,
+									Language: language,
+								}
+								transcripts = append(transcripts, transcript)
+							}
+						}
+					}
+				}
+
+				// Set transcripts if any were found
+				if len(transcripts) > 0 {
+					podcastDetails.Transcripts = transcripts
+				}
+			}
+		}
+
+		// Check for media in Extensions
+		if len(item.Extensions) > 0 {
+			// First check "podcast" namespace for media elements
+			if podcastExt, hasPodcast := item.Extensions["podcast"]; hasPodcast && len(podcastExt) > 0 {
+				var mediaItems []PodcastMediaDetails
+
+				// Look for "media" elements
+				if mediaElems, hasMedia := podcastExt["media"]; hasMedia && len(mediaElems) > 0 {
+					for _, mediaElem := range mediaElems {
+						if attrs, hasAttrs := mediaElem.Attrs, true; hasAttrs {
+							url := attrs["url"]
+							typeStr := attrs["type"]
+							lengthStr := attrs["length"]
+							title := attrs["title"]
+							medium := attrs["medium"]
+
+							if url != "" && typeStr != "" {
+								var mediaType PodcastMediaType
+								// Map to our custom type or use as-is
+								switch typeStr {
+								case "audio/mpeg":
+									mediaType = AudioMPEG
+								case "image/jpeg":
+									mediaType = ImageJPEG
+								case "image/png":
+									mediaType = ImagePNG
+								case "video/mp4":
+									mediaType = VideoMP4
+								case "application/pdf":
+									mediaType = ApplicationPDF
+								default:
+									mediaType = PodcastMediaType(typeStr)
+								}
+
+								// Parse length if available
+								var length int64
+								if lengthStr != "" {
+									length, _ = strconv.ParseInt(lengthStr, 10, 64)
+								}
+
+								// Create and add media item
+								media := PodcastMediaDetails{
+									Url:    url,
+									Type:   mediaType,
+									Length: length,
+									Title:  title,
+									Medium: medium,
+								}
+								mediaItems = append(mediaItems, media)
+							}
+						}
+					}
+				}
+
+				// Also check for media:content elements in the Media RSS namespace
+				if mediaExt, hasMedia := item.Extensions["media"]; hasMedia && len(mediaExt) > 0 {
+					if contentElems, hasContent := mediaExt["content"]; hasContent && len(contentElems) > 0 {
+						for _, contentElem := range contentElems {
+							if attrs, hasAttrs := contentElem.Attrs, true; hasAttrs {
+								url := attrs["url"]
+								typeStr := attrs["type"]
+								lengthStr := attrs["fileSize"]
+								title := attrs["title"] // could also be in the Value
+								medium := attrs["medium"]
+
+								if url != "" {
+									var mediaType PodcastMediaType
+									if typeStr != "" {
+										// Map to our custom type
+										switch typeStr {
+										case "audio/mpeg":
+											mediaType = AudioMPEG
+										case "image/jpeg":
+											mediaType = ImageJPEG
+										case "image/png":
+											mediaType = ImagePNG
+										case "video/mp4":
+											mediaType = VideoMP4
+										case "application/pdf":
+											mediaType = ApplicationPDF
+										default:
+											mediaType = PodcastMediaType(typeStr)
+										}
+									}
+
+									// Parse length if available
+									var length int64
+									if lengthStr != "" {
+										length, _ = strconv.ParseInt(lengthStr, 10, 64)
+									}
+
+									// If title is not in attrs, check Value
+									if title == "" && contentElem.Value != "" {
+										title = contentElem.Value
+									}
+
+									// Create and add media item
+									media := PodcastMediaDetails{
+										Url:    url,
+										Type:   mediaType,
+										Length: length,
+										Title:  title,
+										Medium: medium,
+									}
+									mediaItems = append(mediaItems, media)
+								}
+							}
+						}
+					}
+				}
+
+				// Set media items if any were found
+				if len(mediaItems) > 0 {
+					podcastDetails.Media = mediaItems
+				}
+			}
+		}
+
+		responseItem.PodcastDetails = podcastDetails
+		responseItem.EpisodeType = item.ITunesExt.EpisodeType
+	}
+
+	return responseItem
 }
 
 /**
@@ -869,7 +1074,7 @@ func refreshFeeds() {
 		log.WithFields(logrus.Fields{
 			"url": url,
 		}).Info("[refreshFeeds] Refreshing feed")
-		_ = processURL(url, 1, 20) // or any default paging
+		_ = processURL(url, 1, 20)
 	}
 }
 
@@ -964,7 +1169,7 @@ func sanitizeURL(rawURL string) string {
 
 /**
  * @function getItemAuthor
- * @description Returns an item’s author if set, checking iTunesExt first (for podcasts).
+ * @description Returns an item's author if set, checking iTunesExt first (for podcasts).
  * @param {*gofeed.Item} item The feed item.
  * @returns {string} The author of the item, or an empty string if not found.
  */
@@ -981,7 +1186,7 @@ func getItemAuthor(item *gofeed.Item) string {
 /**
  * @function determineItemTypeAndDuration
  * @description Checks if the feed item is a podcast. If yes,
- *              parses the item’s duration. Returns a type (podcast or article) and the duration in seconds.
+ *              parses the item's duration. Returns a type (podcast or article) and the duration in seconds.
  * @param {*gofeed.Item} item The feed item.
  * @returns {string, int} The type of the item ("podcast" or "article") and the duration in seconds.
  * @dependencies parseDuration
@@ -1046,7 +1251,7 @@ func stringInSlice(str string, list []string) bool {
 /**
  * @function mergeFeedItemsAtParserLevel
  * @description Merges old items from the cache with newly fetched items, deduplicating by ID
- *              and retaining only items from within the last 24 hours (cachePeriod). Also updates items if content changed.
+ *              and retaining only items from within the last year (cachePeriod). Also updates items if content changed.
  * @param {string} feedURL The URL of the feed.
  * @param {[]FeedResponseItem} newItems The newly fetched feed items.
  * @returns {[]FeedResponseItem, error} The merged slice of FeedResponseItem objects, or an error if retrieval from cache fails.
@@ -1056,6 +1261,7 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 	cacheKey := feedURL
 	var existingFeedResponse FeedResponse
 	var existingItems []FeedResponseItem
+	const mergeCachePeriod = 365
 
 	// Attempt to get an existing feed from the cache
 	if err := cache.Get(feed_prefix, cacheKey, &existingFeedResponse); err != nil {
@@ -1081,7 +1287,7 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 		"new":      len(newItems),
 	}).Debug("[mergeFeedItemsAtParserLevel] Merging items")
 	for _, oldItem := range existingItems {
-		if isWithinPeriod(oldItem, cachePeriod) {
+		if isWithinPeriod(oldItem, mergeCachePeriod) {
 			itemMap[oldItem.ID] = oldItem
 		}
 	}
@@ -1093,7 +1299,7 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 				itemMap[newIt.ID] = newIt
 			}
 		} else {
-			if isWithinPeriod(newIt, cachePeriod) {
+			if isWithinPeriod(newIt, mergeCachePeriod) {
 				itemMap[newIt.ID] = newIt
 			}
 		}
@@ -1118,7 +1324,7 @@ func mergeFeedItemsAtParserLevel(feedURL string, newItems []FeedResponseItem) ([
 
 /**
  * @function isWithinPeriod
- * @description Returns true if the FeedResponseItem’s Published date is within 'days' days of now.
+ * @description Returns true if the FeedResponseItem's Published date is within 'days' days of now.
  * @param {FeedResponseItem} item The FeedResponseItem to check.
  * @param {int} days The number of days to check within.
  * @returns {bool} True if the item's Published date is within the specified period, false otherwise.
@@ -1135,7 +1341,7 @@ func isWithinPeriod(item FeedResponseItem, days int) bool {
 /**
  * @function isUpdatedContent
  * @description Returns true if newIt is more recent than oldIt by published date
- *              or if newIt’s content differs from oldIt’s content.
+ *              or if newIt's content differs from oldIt's content.
  * @param {FeedResponseItem} oldIt The old FeedResponseItem.
  * @param {FeedResponseItem} newIt The new FeedResponseItem.
  * @returns {bool} True if the new item is more recent or has different content, false otherwise.

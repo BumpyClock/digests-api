@@ -31,6 +31,45 @@ type ExtendedItem struct {
 	MediaContent []MediaContent `xml:"http://search.yahoo.com/mrss/ content"`
 }
 
+// Add new type for media content types
+type PodcastMediaType string
+
+// Define constants for media types
+const (
+	AudioMPEG      PodcastMediaType = "audio/mpeg"
+	ImageJPEG      PodcastMediaType = "image/jpeg"
+	ImagePNG       PodcastMediaType = "image/png"
+	VideoMP4       PodcastMediaType = "video/mp4"
+	ApplicationPDF PodcastMediaType = "application/pdf"
+)
+
+// Create a struct for podcast media details
+type PodcastMediaDetails struct {
+	Url    string           `json:"url"`
+	Type   PodcastMediaType `json:"type"`
+	Length int64            `json:"length,omitempty"`
+	Title  string           `json:"title,omitempty"`
+	Medium string           `json:"medium,omitempty"`
+}
+
+// PodcastEpisodeDetails represents iTunes-specific podcast episode metadata
+type PodcastEpisodeDetails struct {
+	Block             bool                        `json:"block,omitempty"`
+	Duration          int                         `json:"duration,omitempty"`
+	Explicit          bool                        `json:"explicit,omitempty"`
+	Keywords          string                      `json:"keywords,omitempty"`
+	Subtitle          string                      `json:"subtitle,omitempty"`
+	Summary           string                      `json:"summary,omitempty"`
+	Image             string                      `json:"image,omitempty"`
+	IsClosedCaptioned bool                        `json:"isClosedCaptioned,omitempty"`
+	Episode           int                         `json:"episode,omitempty"`
+	Season            int                         `json:"season,omitempty"`
+	Order             int                         `json:"order,omitempty"`
+	EpisodeType       string                      `json:"episodeType,omitempty"`
+	Transcripts       []PodcastTranscriptsDetails `json:"transcripts,omitempty"`
+	Media             []PodcastMediaDetails       `json:"media,omitempty"`
+}
+
 // FeedResponseItem represents an enriched structure for an individual feed item.
 type FeedResponseItem struct {
 	Type                   string                      `json:"type"`
@@ -51,6 +90,7 @@ type FeedResponseItem struct {
 	EpisodeType            string                      `json:"episodeType,omitempty"`
 	Subtitle               []PodcastTranscriptsDetails `json:"subtitle,omitempty"`
 	Duration               int                         `json:"duration,omitempty"`
+	PodcastDetails         *PodcastEpisodeDetails      `json:"podcastDetails,omitempty"`
 }
 
 // FeedResponse represents the structure for the overall feed, including metadata and items.
@@ -180,8 +220,9 @@ type PodcastAPIResponseItem struct {
 }
 
 type PodcastTranscriptsDetails struct {
-	Url  string                 `json:"url"`
-	Type PodcastTranscriptsType `json:"type"`
+	Url      string                 `json:"url"`
+	Type     PodcastTranscriptsType `json:"type"`
+	Language string                 `json:"language,omitempty"`
 }
 
 type PodcastTranscriptsType string
@@ -191,6 +232,7 @@ const (
 	TextHTML       PodcastTranscriptsType = "text/html"
 	ApplicationSRT PodcastTranscriptsType = "application/srt"
 	ApplicationVTT PodcastTranscriptsType = "application/vtt"
+	TextPlain      PodcastTranscriptsType = "text/plain"
 )
 
 type PodcastSearchAPIResponse struct {
