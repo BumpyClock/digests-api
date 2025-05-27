@@ -11,20 +11,22 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	
 	"digests-app-api/core/domain"
 	"digests-app-api/core/interfaces"
+	"digests-app-api/pkg/utils/duration"
+	"digests-app-api/pkg/utils/html"
+	"digests-app-api/pkg/utils/parse"
+	utiltime "digests-app-api/pkg/utils/time"
 	"github.com/mmcdole/gofeed"
 )
 
 // FeedService handles feed parsing and management
 type FeedService struct {
-	deps              interfaces.Dependencies
-	thumbnailColorSvc interfaces.ThumbnailColorService
+	deps interfaces.Dependencies
 }
 
 // NewFeedService creates a new feed service instance
@@ -34,13 +36,27 @@ func NewFeedService(deps interfaces.Dependencies) *FeedService {
 	}
 }
 
-// SetThumbnailColorService sets the thumbnail color service
-func (s *FeedService) SetThumbnailColorService(svc interfaces.ThumbnailColorService) {
-	s.thumbnailColorSvc = svc
+// ParseFeeds parses one or more feeds concurrently
+func (s *FeedService) ParseFeeds(ctx context.Context, urls []string) ([]*domain.Feed, error) {
+	if len(urls) == 0 {
+		return []*domain.Feed{}, nil
+	}
+
+	// Single URL - parse directly without concurrency overhead
+	if len(urls) == 1 {
+		feed, err := s.parseSingleFeed(ctx, urls[0])
+		if err != nil {
+			return nil, err
+		}
+		return []*domain.Feed{feed}, nil
+	}
+
+	// Multiple URLs - parse concurrently
+	return s.parseFeedsConcurrently(ctx, urls)
 }
 
-// ParseSingleFeed parses a feed from the given URL
-func (s *FeedService) ParseSingleFeed(ctx context.Context, feedURL string) (*domain.Feed, error) {
+// parseSingleFeed handles parsing of a single feed with caching
+func (s *FeedService) parseSingleFeed(ctx context.Context, feedURL string) (*domain.Feed, error) {
 	// Validate URL
 	if feedURL == "" {
 		return nil, errors.New("feed URL cannot be empty")
@@ -48,7 +64,7 @@ func (s *FeedService) ParseSingleFeed(ctx context.Context, feedURL string) (*dom
 
 	parsedURL, err := url.Parse(feedURL)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		return nil, errors.New("invalid URL format")
+		return nil, fmt.Errorf("invalid URL format: %s", feedURL)
 	}
 
 	// Check cache first
@@ -57,31 +73,8 @@ func (s *FeedService) ParseSingleFeed(ctx context.Context, feedURL string) (*dom
 		return cachedFeed, nil
 	}
 
-	// Check if we have HTTP client
-	if s.deps.HTTPClient == nil {
-		return nil, errors.New("HTTP client not configured")
-	}
-
-	// Fetch the feed
-	resp, err := s.deps.HTTPClient.Get(ctx, feedURL)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body().Close()
-
-	// Check status code
-	if resp.StatusCode() != 200 {
-		return nil, errors.New("feed returned non-200 status code")
-	}
-
-	// Read response body
-	bodyBytes, err := io.ReadAll(resp.Body())
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse feed content
-	feed, err := s.parseFeedContent(bodyBytes, feedURL)
+	// Fetch and parse the feed
+	feed, err := s.fetchAndParseFeed(ctx, feedURL)
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +83,47 @@ func (s *FeedService) ParseSingleFeed(ctx context.Context, feedURL string) (*dom
 	_ = s.cacheFeed(ctx, feedURL, feed)
 
 	return feed, nil
+}
+
+// fetchAndParseFeed fetches a feed from URL and parses it
+func (s *FeedService) fetchAndParseFeed(ctx context.Context, feedURL string) (*domain.Feed, error) {
+	// Check if we have HTTP client
+	if s.deps.HTTPClient == nil {
+		return nil, errors.New("HTTP client not configured")
+	}
+
+	// Fetch the feed
+	resp, err := s.deps.HTTPClient.Get(ctx, feedURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch feed: %w", err)
+	}
+	defer resp.Body().Close()
+
+	// Check status code
+	if resp.StatusCode() != 200 {
+		return nil, fmt.Errorf("feed returned status code %d", resp.StatusCode())
+	}
+
+	// Read response body
+	bodyBytes, err := io.ReadAll(resp.Body())
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Parse feed content
+	return s.parseFeedContent(bodyBytes, feedURL)
+}
+
+// ParseSingleFeed is kept for backward compatibility but delegates to ParseFeeds
+func (s *FeedService) ParseSingleFeed(ctx context.Context, feedURL string) (*domain.Feed, error) {
+	feeds, err := s.ParseFeeds(ctx, []string{feedURL})
+	if err != nil {
+		return nil, err
+	}
+	if len(feeds) == 0 {
+		return nil, errors.New("no feed returned")
+	}
+	return feeds[0], nil
 }
 
 // parseFeedContent parses feed content from bytes
@@ -166,7 +200,7 @@ func (s *FeedService) parseFeedContent(content []byte, feedURL string) (*domain.
 		feed.Published = parsedFeed.PublishedParsed
 	} else if parsedFeed.Published != "" {
 		// Try to parse the string
-		if t := parseTime(parsedFeed.Published); !t.IsZero() {
+		if t := utiltime.ParseFlexibleTime(parsedFeed.Published); !t.IsZero() {
 			feed.Published = &t
 		}
 	}
@@ -185,7 +219,7 @@ func (s *FeedService) convertItemToDomain(item *gofeed.Item, feed *gofeed.Feed) 
 	feedItem := domain.FeedItem{
 		ID:          item.GUID,
 		Title:       item.Title,
-		Description: parseHTMLToText(item.Description),
+		Description: html.StripHTML(item.Description),
 		Link:        item.Link,
 	}
 
@@ -198,7 +232,7 @@ func (s *FeedService) convertItemToDomain(item *gofeed.Item, feed *gofeed.Feed) 
 	if item.PublishedParsed != nil {
 		feedItem.Published = *item.PublishedParsed
 	} else if item.Published != "" {
-		feedItem.Published = parseTime(item.Published)
+		feedItem.Published = utiltime.ParseFlexibleTime(item.Published)
 	}
 
 	// Set created time (same as published in old implementation)
@@ -218,11 +252,11 @@ func (s *FeedService) convertItemToDomain(item *gofeed.Item, feed *gofeed.Feed) 
 
 	// Content handling - parse HTML for plain text, keep encoded version
 	if item.Content != "" {
-		feedItem.Content = parseHTMLToText(item.Content)
+		feedItem.Content = html.StripHTML(item.Content)
 		feedItem.ContentEncoded = item.Content
 	} else if item.Description != "" {
 		// If no content, use description
-		feedItem.Content = parseHTMLToText(item.Description)
+		feedItem.Content = html.StripHTML(item.Description)
 		feedItem.ContentEncoded = item.Description
 	}
 
@@ -241,9 +275,9 @@ func (s *FeedService) convertItemToDomain(item *gofeed.Item, feed *gofeed.Feed) 
 	// iTunes extensions
 	if item.ITunesExt != nil {
 		// Parse duration to seconds
-		feedItem.Duration = parseDurationToSeconds(item.ITunesExt.Duration)
-		feedItem.Episode = parseIntOrZero(item.ITunesExt.Episode)
-		feedItem.Season = parseIntOrZero(item.ITunesExt.Season)
+		feedItem.Duration = duration.ParseToSeconds(item.ITunesExt.Duration)
+		feedItem.Episode = parse.IntOrZero(item.ITunesExt.Episode)
+		feedItem.Season = parse.IntOrZero(item.ITunesExt.Season)
 		feedItem.EpisodeType = item.ITunesExt.EpisodeType
 		feedItem.Subtitle = item.ITunesExt.Subtitle
 		feedItem.Summary = item.ITunesExt.Summary
@@ -290,163 +324,38 @@ func (s *FeedService) findThumbnail(item *gofeed.Item, feed *gofeed.Feed) string
 	return ""
 }
 
-// parseDurationToSeconds parses duration string to seconds
-func parseDurationToSeconds(durationStr string) string {
-	if durationStr == "" {
-		return ""
-	}
-
-	// Try integer first (already in seconds)
-	if seconds, err := strconv.Atoi(durationStr); err == nil {
-		return strconv.Itoa(seconds)
-	}
-
-	// Parse HH:MM:SS or MM:SS format
-	parts := strings.Split(durationStr, ":")
-	var totalSeconds int
-	
-	switch len(parts) {
-	case 3: // HH:MM:SS
-		hours, _ := strconv.Atoi(parts[0])
-		minutes, _ := strconv.Atoi(parts[1])
-		seconds, _ := strconv.Atoi(parts[2])
-		totalSeconds = hours*3600 + minutes*60 + seconds
-	case 2: // MM:SS
-		minutes, _ := strconv.Atoi(parts[0])
-		seconds, _ := strconv.Atoi(parts[1])
-		totalSeconds = minutes*60 + seconds
-	default:
-		return durationStr // Return as-is if can't parse
-	}
-	
-	return strconv.Itoa(totalSeconds)
-}
-
-// parseHTMLToText extracts text content from HTML
-func parseHTMLToText(html string) string {
-	// Simple HTML tag removal - in production you'd use a proper HTML parser
-	// This is a simplified version
-	text := html
-	// Remove script and style content
-	text = strings.ReplaceAll(text, "<script>", "<script><!--")
-	text = strings.ReplaceAll(text, "</script>", "--></script>")
-	text = strings.ReplaceAll(text, "<style>", "<style><!--")
-	text = strings.ReplaceAll(text, "</style>", "--></style>")
-	
-	// Remove HTML tags
-	for strings.Contains(text, "<") && strings.Contains(text, ">") {
-		start := strings.Index(text, "<")
-		end := strings.Index(text, ">")
-		if start < end && start >= 0 && end >= 0 {
-			text = text[:start] + " " + text[end+1:]
-		} else {
-			break
-		}
-	}
-	
-	// Clean up whitespace
-	text = strings.ReplaceAll(text, "&nbsp;", " ")
-	text = strings.ReplaceAll(text, "&amp;", "&")
-	text = strings.ReplaceAll(text, "&lt;", "<")
-	text = strings.ReplaceAll(text, "&gt;", ">")
-	text = strings.ReplaceAll(text, "&#8230;", "...")
-	text = strings.ReplaceAll(text, "&#8217;", "'")
-	text = strings.ReplaceAll(text, "&#8220;", "\"")
-	text = strings.ReplaceAll(text, "&#8221;", "\"")
-	text = strings.TrimSpace(text)
-	
-	return text
-}
-
-// parseTime attempts to parse time from various formats
-func parseTime(timeStr string) time.Time {
-	if timeStr == "" {
-		return time.Time{}
-	}
-	
-	// Try various formats
-	formats := []string{
-		time.RFC3339,
-		time.RFC1123,
-		time.RFC1123Z,
-		time.RFC822,
-		time.RFC850,
-		time.ANSIC,
-		"Mon, 02 Jan 2006 15:04:05 -0700",
-		"2006-01-02T15:04:05Z07:00",
-	}
-	
-	for _, format := range formats {
-		if t, err := time.Parse(format, timeStr); err == nil {
-			return t
-		}
-	}
-	
-	return time.Time{}
-}
-
-// detectFeedType determines if this is an article feed, podcast, or generic RSS
+// detectFeedType determines if this is an article feed or podcast
 func detectFeedType(feed *gofeed.Feed) string {
-	// Check for podcast indicators
+	// Quick check: iTunes extension at feed level = podcast
 	if feed.ITunesExt != nil {
 		return "podcast"
 	}
 	
-	// Check for podcast namespace
-	if feed.Extensions != nil {
-		// Check for iTunes namespace
-		if _, hasITunes := feed.Extensions["itunes"]; hasITunes {
-			return "podcast"
-		}
-		// Check for podcast namespace
-		if _, hasPodcast := feed.Extensions["podcast"]; hasPodcast {
-			return "podcast"
-		}
+	// Check first few items for podcast indicators
+	const maxItemsToCheck = 3
+	itemsToCheck := len(feed.Items)
+	if itemsToCheck > maxItemsToCheck {
+		itemsToCheck = maxItemsToCheck
 	}
 	
-	// Check items for audio/video enclosures
-	audioVideoCount := 0
-	for _, item := range feed.Items {
-		if len(item.Enclosures) > 0 {
-			for _, enc := range item.Enclosures {
-				if strings.HasPrefix(enc.Type, "audio/") || strings.HasPrefix(enc.Type, "video/") {
-					audioVideoCount++
-					break
-				}
+	for i := 0; i < itemsToCheck; i++ {
+		item := feed.Items[i]
+		
+		// Item has iTunes extension = podcast
+		if item.ITunesExt != nil {
+			return "podcast"
+		}
+		
+		// Check for audio/video enclosures
+		for _, enc := range item.Enclosures {
+			if strings.HasPrefix(enc.Type, "audio/") || strings.HasPrefix(enc.Type, "video/") {
+				return "podcast"
 			}
 		}
-		// Also check item-level iTunes extensions
-		if item.ITunesExt != nil {
-			audioVideoCount++
-		}
 	}
 	
-	// If most items have audio/video, it's likely a podcast
-	if len(feed.Items) > 0 && audioVideoCount > len(feed.Items)/2 {
-		return "podcast"
-	}
-	
-	// Check for podcast keywords in title or description
-	feedText := strings.ToLower(feed.Title + " " + feed.Description)
-	podcastKeywords := []string{"podcast", "episode", "show", "audio", "listen"}
-	for _, keyword := range podcastKeywords {
-		if strings.Contains(feedText, keyword) {
-			return "podcast"
-		}
-	}
-	
-	// Default to "article" for most feeds (not "rss")
-	// since most RSS feeds are article/blog feeds
+	// Everything else is an article feed
 	return "article"
-}
-
-// parseIntOrZero safely parses a string to int, returns 0 on error
-func parseIntOrZero(s string) int {
-	if s == "" {
-		return 0
-	}
-	i, _ := strconv.Atoi(s)
-	return i
 }
 
 // getCachedFeed retrieves a feed from cache
@@ -490,16 +399,8 @@ func (s *FeedService) cacheFeed(ctx context.Context, feedURL string, feed *domai
 	return s.deps.Cache.Set(ctx, key, data, 1*time.Hour)
 }
 
-// ParseFeeds parses multiple feeds concurrently
-func (s *FeedService) ParseFeeds(ctx context.Context, urls []string) ([]*domain.Feed, error) {
-	if urls == nil {
-		return nil, errors.New("urls cannot be nil")
-	}
-
-	if len(urls) == 0 {
-		return []*domain.Feed{}, nil
-	}
-
+// parseFeedsConcurrently handles concurrent parsing of multiple feeds
+func (s *FeedService) parseFeedsConcurrently(ctx context.Context, urls []string) ([]*domain.Feed, error) {
 	// Create channels for results
 	type feedResult struct {
 		feed *domain.Feed
@@ -534,7 +435,7 @@ func (s *FeedService) ParseFeeds(ctx context.Context, urls []string) ([]*domain.
 			defer func() { <-semaphore }()
 
 			// Parse the feed
-			feed, err := s.ParseSingleFeed(ctx, feedURL)
+			feed, err := s.parseSingleFeed(ctx, feedURL)
 			resultsChan <- feedResult{
 				feed: feed,
 				err:  err,

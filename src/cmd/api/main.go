@@ -21,6 +21,7 @@ import (
 	"digests-app-api/core/services"
 	"digests-app-api/infrastructure/cache/memory"
 	"digests-app-api/infrastructure/cache/redis"
+	"digests-app-api/infrastructure/cache/sqlite"
 	stdhttp "digests-app-api/infrastructure/http/standard"
 	stdlogger "digests-app-api/infrastructure/logger/standard"
 	"digests-app-api/pkg/config"
@@ -62,6 +63,19 @@ func main() {
 				"address": cfg.Cache.Redis.Address,
 			})
 		}
+	case "sqlite":
+		sqliteCache, err := sqlite.NewSQLiteCache(cfg.Cache.SQLite.FilePath)
+		if err != nil {
+			logger.Error("Failed to create SQLite cache, falling back to memory", map[string]interface{}{
+				"error": err.Error(),
+			})
+			cache = memory.NewMemoryCache()
+		} else {
+			cache = sqliteCache
+			logger.Info("Using SQLite cache", map[string]interface{}{
+				"file_path": cfg.Cache.SQLite.FilePath,
+			})
+		}
 	default:
 		cache = memory.NewMemoryCache()
 		logger.Info("Using memory cache", nil)
@@ -80,8 +94,11 @@ func main() {
 	// Create services
 	feedService := feed.NewFeedService(deps)
 	searchService := search.NewSearchService(deps)
-	thumbnailColorService := services.NewThumbnailColorService(deps)
-	metadataService := services.NewMetadataService(deps)
+	
+	// Create unified enrichment service with configurable cache TTL
+	colorCacheTTL := time.Duration(cfg.Cache.ColorCacheDays) * 24 * time.Hour
+	enrichmentService := services.NewContentEnrichmentService(deps, colorCacheTTL)
+	
 	// Note: Share service would need a storage implementation
 	_ = searchService // Will be used when we add search handlers
 
@@ -94,7 +111,7 @@ func main() {
 	humaAPI, router := api.NewAPIWithMiddleware(apiConfig)
 
 	// Create and register handlers
-	feedHandler := handlers.NewFeedHandler(feedService, thumbnailColorService, metadataService)
+	feedHandler := handlers.NewFeedHandler(feedService, enrichmentService)
 	feedHandler.RegisterRoutes(humaAPI)
 	
 	discoverHandler := handlers.NewDiscoverHandler(httpClient)

@@ -8,13 +8,6 @@ import (
 	"digests-app-api/core/domain"
 )
 
-// ThumbnailColorService extracts colors from thumbnail images
-type ThumbnailColorService interface {
-	ExtractColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
-	ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor
-	GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
-}
-
 // MetadataResult contains extracted metadata from a webpage
 type MetadataResult struct {
 	Title       string
@@ -26,8 +19,14 @@ type MetadataResult struct {
 	Favicon     string
 }
 
-// MetadataService extracts metadata from web pages
-type MetadataService interface {
+// ContentEnrichmentService provides unified content enrichment capabilities
+type ContentEnrichmentService interface {
+	// Metadata extraction
 	ExtractMetadata(ctx context.Context, url string) (*MetadataResult, error)
 	ExtractMetadataBatch(ctx context.Context, urls []string) map[string]*MetadataResult
+	
+	// Color extraction
+	ExtractColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
+	ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor
+	GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
 }

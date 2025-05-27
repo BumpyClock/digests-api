@@ -33,6 +33,7 @@ const (
 type ThumbnailColorService struct {
 	deps       interfaces.Dependencies
 	httpClient *http.Client
+	cacheTTL   time.Duration
 }
 
 // NewThumbnailColorService creates a new thumbnail color service
@@ -42,6 +43,7 @@ func NewThumbnailColorService(deps interfaces.Dependencies) *ThumbnailColorServi
 		httpClient: &http.Client{
 			Timeout: httpTimeout,
 		},
+		cacheTTL: 7 * 24 * time.Hour, // Default 7 days
 	}
 }
 
@@ -82,7 +84,7 @@ func (s *ThumbnailColorService) ExtractColor(ctx context.Context, imageURL strin
 	if s.deps.Cache != nil && color != nil {
 		cacheKey := fmt.Sprintf("thumbnailColor:%s", imageURL)
 		cacheData := fmt.Sprintf("%d,%d,%d", color.R, color.G, color.B)
-		_ = s.deps.Cache.Set(ctx, cacheKey, []byte(cacheData), 24*time.Hour)
+		_ = s.deps.Cache.Set(ctx, cacheKey, []byte(cacheData), s.cacheTTL)
 	}
 
 	return color, nil

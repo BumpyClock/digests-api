@@ -21,26 +21,17 @@ type FeedService interface {
 	ParseSingleFeed(ctx context.Context, url string) (*domain.Feed, error)
 }
 
-// ThumbnailColorService interface for color extraction
-type ThumbnailColorService interface {
-	ExtractColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
-	ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor
-	GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
-}
-
 // FeedHandler handles feed-related HTTP requests
 type FeedHandler struct {
-	feedService          FeedService
-	thumbnailColorService ThumbnailColorService
-	metadataService      interfaces.MetadataService
+	feedService      FeedService
+	enrichmentService interfaces.ContentEnrichmentService
 }
 
 // NewFeedHandler creates a new feed handler
-func NewFeedHandler(feedService FeedService, thumbnailColorService ThumbnailColorService, metadataService interfaces.MetadataService) *FeedHandler {
+func NewFeedHandler(feedService FeedService, enrichmentService interfaces.ContentEnrichmentService) *FeedHandler {
 	return &FeedHandler{
-		feedService:          feedService,
-		thumbnailColorService: thumbnailColorService,
-		metadataService:      metadataService,
+		feedService:      feedService,
+		enrichmentService: enrichmentService,
 	}
 }
 
@@ -86,23 +77,26 @@ func (h *FeedHandler) ParseFeeds(ctx context.Context, input *ParseFeedsInput) (*
 		return nil, toHumaError(err)
 	}
 
-	// Extract article URLs for metadata extraction
+	// Extract article URLs for metadata extraction (if enabled)
 	articleURLs := make([]string, 0)
 	urlToItemMap := make(map[string]*domain.FeedItem)
-	for _, feed := range feeds {
-		for i := range feed.Items {
-			item := &feed.Items[i]
-			if item.Link != "" {
-				articleURLs = append(articleURLs, item.Link)
-				urlToItemMap[item.Link] = item
+	var metadataResults map[string]*interfaces.MetadataResult
+	
+	if input.Body.EnrichmentOptions != nil && *input.Body.EnrichmentOptions.ExtractMetadata {
+		for _, feed := range feeds {
+			for i := range feed.Items {
+				item := &feed.Items[i]
+				if item.Link != "" {
+					articleURLs = append(articleURLs, item.Link)
+					urlToItemMap[item.Link] = item
+				}
 			}
 		}
-	}
-
-	// Extract metadata for all articles
-	var metadataResults map[string]*interfaces.MetadataResult
-	if h.metadataService != nil && len(articleURLs) > 0 {
-		metadataResults = h.metadataService.ExtractMetadataBatch(ctx, articleURLs)
+		
+		// Extract metadata for all articles
+		if h.enrichmentService != nil && len(articleURLs) > 0 {
+			metadataResults = h.enrichmentService.ExtractMetadataBatch(ctx, articleURLs)
+		}
 	}
 
 	// Update items with metadata thumbnails
@@ -135,34 +129,36 @@ func (h *FeedHandler) ParseFeeds(ctx context.Context, input *ParseFeedsInput) (*
 		}
 	}
 
-	// Check cache for already computed colors
+	// Check cache for already computed colors (if enabled)
 	thumbnailColors := make(map[string]*domain.RGBColor)
-	if h.thumbnailColorService != nil && len(thumbnailURLs) > 0 {
-		// First, check which colors are already in cache
-		for _, url := range thumbnailURLs {
-			// Try to get from cache without computing
-			if cached, err := h.thumbnailColorService.GetCachedColor(ctx, url); err == nil && cached != nil {
-				thumbnailColors[url] = cached
+	if input.Body.EnrichmentOptions != nil && *input.Body.EnrichmentOptions.ExtractColors {
+		if h.enrichmentService != nil && len(thumbnailURLs) > 0 {
+			// First, check which colors are already in cache
+			for _, url := range thumbnailURLs {
+				// Try to get from cache without computing
+				if cached, err := h.enrichmentService.GetCachedColor(ctx, url); err == nil && cached != nil {
+					thumbnailColors[url] = cached
+				}
 			}
-		}
-		
-		// Collect URLs that need color extraction
-		var urlsToProcess []string
-		for _, url := range thumbnailURLs {
-			if _, exists := thumbnailColors[url]; !exists {
-				urlsToProcess = append(urlsToProcess, url)
-			}
-		}
-		
-		// If we have URLs to process, do it in the background
-		if len(urlsToProcess) > 0 {
-			// Create a new context that won't be cancelled when request ends
-			backgroundCtx := context.Background()
 			
-			// Process colors in background
-			go func() {
-				h.thumbnailColorService.ExtractColorBatch(backgroundCtx, urlsToProcess)
-			}()
+			// Collect URLs that need color extraction
+			var urlsToProcess []string
+			for _, url := range thumbnailURLs {
+				if _, exists := thumbnailColors[url]; !exists {
+					urlsToProcess = append(urlsToProcess, url)
+				}
+			}
+			
+			// If we have URLs to process, do it in the background
+			if len(urlsToProcess) > 0 {
+				// Create a new context that won't be cancelled when request ends
+				backgroundCtx := context.Background()
+				
+				// Process colors in background
+				go func() {
+					h.enrichmentService.ExtractColorBatch(backgroundCtx, urlsToProcess)
+				}()
+			}
 		}
 	}
 
@@ -176,9 +172,11 @@ func (h *FeedHandler) ParseFeeds(ctx context.Context, input *ParseFeedsInput) (*
 
 // ParseSingleFeedInput defines the input for the ParseSingleFeed operation
 type ParseSingleFeedInput struct {
-	URL          string `query:"url" required:"true" format:"uri" doc:"Feed URL to parse"`
-	Page         int    `query:"page,omitempty" minimum:"1" default:"1" doc:"Page number for items"`
-	ItemsPerPage int    `query:"items_per_page,omitempty" minimum:"1" maximum:"100" default:"50" doc:"Number of items per page"`
+	URL              string `query:"url" required:"true" format:"uri" doc:"Feed URL to parse"`
+	Page             int    `query:"page,omitempty" minimum:"1" default:"1" doc:"Page number for items"`
+	ItemsPerPage     int    `query:"items_per_page,omitempty" minimum:"1" maximum:"100" default:"50" doc:"Number of items per page"`
+	ExtractMetadata  bool   `query:"extract_metadata,omitempty" default:"true" doc:"Extract metadata from article URLs"`
+	ExtractColors    bool   `query:"extract_colors,omitempty" default:"true" doc:"Extract dominant colors from images"`
 }
 
 // ParseSingleFeedOutput defines the output for the ParseSingleFeed operation

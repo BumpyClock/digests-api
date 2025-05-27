@@ -13,6 +13,18 @@ type ParseFeedsRequest struct {
 	
 	// ItemsPerPage is the number of items per page
 	ItemsPerPage int `json:"items_per_page,omitempty" minimum:"1" maximum:"100" default:"50" doc:"Number of items per page"`
+	
+	// EnrichmentOptions controls which enrichment features are enabled
+	EnrichmentOptions *EnrichmentOptions `json:"enrichment,omitempty" doc:"Optional enrichment configuration"`
+}
+
+// EnrichmentOptions controls which optional enrichment features are enabled
+type EnrichmentOptions struct {
+	// ExtractMetadata enables metadata extraction from URLs (default: true)
+	ExtractMetadata *bool `json:"extract_metadata,omitempty" default:"true" doc:"Extract metadata from article URLs"`
+	
+	// ExtractColors enables color extraction from images (default: true)
+	ExtractColors *bool `json:"extract_colors,omitempty" default:"true" doc:"Extract dominant colors from images"`
 }
 
 // ApplyDefaults sets default values for optional fields
@@ -22,6 +34,19 @@ func (r *ParseFeedsRequest) ApplyDefaults() {
 	}
 	if r.ItemsPerPage == 0 {
 		r.ItemsPerPage = 50
+	}
+	
+	// Set default enrichment options if not provided
+	if r.EnrichmentOptions == nil {
+		r.EnrichmentOptions = &EnrichmentOptions{}
+	}
+	if r.EnrichmentOptions.ExtractMetadata == nil {
+		enabled := true
+		r.EnrichmentOptions.ExtractMetadata = &enabled
+	}
+	if r.EnrichmentOptions.ExtractColors == nil {
+		enabled := true
+		r.EnrichmentOptions.ExtractColors = &enabled
 	}
 }
 
@@ -35,6 +60,9 @@ type SingleFeedRequest struct {
 	
 	// ItemsPerPage is the number of items per page
 	ItemsPerPage int `json:"items_per_page,omitempty" minimum:"1" maximum:"100" default:"50" doc:"Number of items per page"`
+	
+	// EnrichmentOptions controls which enrichment features are enabled
+	EnrichmentOptions *EnrichmentOptions `json:"enrichment,omitempty" doc:"Optional enrichment configuration"`
 }
 
 // ApplyDefaults sets default values for optional fields
@@ -44,5 +72,18 @@ func (r *SingleFeedRequest) ApplyDefaults() {
 	}
 	if r.ItemsPerPage == 0 {
 		r.ItemsPerPage = 50
+	}
+	
+	// Set default enrichment options if not provided
+	if r.EnrichmentOptions == nil {
+		r.EnrichmentOptions = &EnrichmentOptions{}
+	}
+	if r.EnrichmentOptions.ExtractMetadata == nil {
+		enabled := true
+		r.EnrichmentOptions.ExtractMetadata = &enabled
+	}
+	if r.EnrichmentOptions.ExtractColors == nil {
+		enabled := true
+		r.EnrichmentOptions.ExtractColors = &enabled
 	}
 }

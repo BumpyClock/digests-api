@@ -29,7 +29,7 @@ type ServerConfig struct {
 
 // CacheConfig holds cache backend configuration
 type CacheConfig struct {
-	// Type specifies the cache backend (redis/memory)
+	// Type specifies the cache backend (redis/memory/sqlite)
 	Type string
 
 	// Redis contains Redis-specific configuration
@@ -37,6 +37,18 @@ type CacheConfig struct {
 
 	// Memory contains in-memory cache configuration
 	Memory MemoryConfig
+	
+	// SQLite contains SQLite-specific configuration
+	SQLite SQLiteConfig
+	
+	// ColorCacheDays is the number of days to cache thumbnail colors
+	ColorCacheDays int
+}
+
+// SQLiteConfig holds SQLite-specific configuration
+type SQLiteConfig struct {
+	// FilePath is the path to the SQLite database file
+	FilePath string
 }
 
 // RedisConfig holds Redis-specific configuration
@@ -74,6 +86,10 @@ func LoadFromEnv() (*Config, error) {
 			Memory: MemoryConfig{
 				DefaultExpiration: getEnvAsIntOrDefault("MEMORY_CACHE_EXPIRATION", 3600),
 			},
+			SQLite: SQLiteConfig{
+				FilePath: getEnvOrDefault("SQLITE_CACHE_PATH", "cache.db"),
+			},
+			ColorCacheDays: getEnvAsIntOrDefault("COLOR_CACHE_DAYS", 7),
 		},
 	}
 
@@ -108,8 +124,8 @@ func (c *Config) Validate() error {
 		return errors.New("refresh timer must be at least 1 second")
 	}
 
-	if c.Cache.Type != "redis" && c.Cache.Type != "memory" {
-		return errors.New("cache type must be 'redis' or 'memory'")
+	if c.Cache.Type != "redis" && c.Cache.Type != "memory" && c.Cache.Type != "sqlite" {
+		return errors.New("cache type must be 'redis', 'memory', or 'sqlite'")
 	}
 
 	if c.Cache.Type == "redis" && c.Cache.Redis.Address == "" {
