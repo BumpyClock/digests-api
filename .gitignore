@@ -12,4 +12,20 @@ src/tmp/main.exe
 src/tmp/main.exe
 tmp/*
 tmp/
+.claude/
 
+# Test artifacts
+*.test
+coverage.out
+coverage.html
+
+# Vendor directory (if using)
+vendor/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+CLAUDE.md
