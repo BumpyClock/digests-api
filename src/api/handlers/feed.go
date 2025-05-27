@@ -10,25 +10,20 @@ import (
 	"digests-app-api/api/dto/mappers"
 	"digests-app-api/api/dto/requests"
 	"digests-app-api/api/dto/responses"
+	"digests-app-api/core/config"
 	"digests-app-api/core/domain"
 	"digests-app-api/core/interfaces"
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// FeedService interface defines the methods needed from the feed service
-type FeedService interface {
-	ParseFeeds(ctx context.Context, urls []string) ([]*domain.Feed, error)
-	ParseSingleFeed(ctx context.Context, url string) (*domain.Feed, error)
-}
-
 // FeedHandler handles feed-related HTTP requests
 type FeedHandler struct {
-	feedService      FeedService
+	feedService      interfaces.FeedService
 	enrichmentService interfaces.ContentEnrichmentService
 }
 
 // NewFeedHandler creates a new feed handler
-func NewFeedHandler(feedService FeedService, enrichmentService interfaces.ContentEnrichmentService) *FeedHandler {
+func NewFeedHandler(feedService interfaces.FeedService, enrichmentService interfaces.ContentEnrichmentService) *FeedHandler {
 	return &FeedHandler{
 		feedService:      feedService,
 		enrichmentService: enrichmentService,
@@ -71,6 +66,9 @@ func (h *FeedHandler) ParseFeeds(ctx context.Context, input *ParseFeedsInput) (*
 	// Apply defaults
 	input.Body.ApplyDefaults()
 
+	// Convert request enrichment options to config
+	enrichmentConfig := h.requestOptionsToConfig(input.Body.EnrichmentOptions)
+
 	// Call service
 	feeds, err := h.feedService.ParseFeeds(ctx, input.Body.URLs)
 	if err != nil {
@@ -82,7 +80,7 @@ func (h *FeedHandler) ParseFeeds(ctx context.Context, input *ParseFeedsInput) (*
 	urlToItemMap := make(map[string]*domain.FeedItem)
 	var metadataResults map[string]*interfaces.MetadataResult
 	
-	if input.Body.EnrichmentOptions != nil && *input.Body.EnrichmentOptions.ExtractMetadata {
+	if enrichmentConfig.ExtractMetadata {
 		for _, feed := range feeds {
 			for i := range feed.Items {
 				item := &feed.Items[i]
@@ -131,7 +129,7 @@ func (h *FeedHandler) ParseFeeds(ctx context.Context, input *ParseFeedsInput) (*
 
 	// Check cache for already computed colors (if enabled)
 	thumbnailColors := make(map[string]*domain.RGBColor)
-	if input.Body.EnrichmentOptions != nil && *input.Body.EnrichmentOptions.ExtractColors {
+	if enrichmentConfig.ExtractColors {
 		if h.enrichmentService != nil && len(thumbnailURLs) > 0 {
 			// First, check which colors are already in cache
 			for _, url := range thumbnailURLs {
@@ -221,4 +219,27 @@ func (h *FeedHandler) ParseSingleFeed(ctx context.Context, input *ParseSingleFee
 	return &ParseSingleFeedOutput{
 		Body: *feedResponse,
 	}, nil
+}
+
+// requestOptionsToConfig converts HTTP request enrichment options to core config
+func (h *FeedHandler) requestOptionsToConfig(opts *requests.EnrichmentOptions) config.EnrichmentConfig {
+	if opts == nil {
+		return config.DefaultEnrichmentConfig()
+	}
+	
+	cfg := config.EnrichmentConfig{}
+	
+	if opts.ExtractMetadata != nil {
+		cfg.ExtractMetadata = *opts.ExtractMetadata
+	} else {
+		cfg.ExtractMetadata = true
+	}
+	
+	if opts.ExtractColors != nil {
+		cfg.ExtractColors = *opts.ExtractColors
+	} else {
+		cfg.ExtractColors = true
+	}
+	
+	return cfg
 }

@@ -23,7 +23,8 @@ func TestV1APICompatibility(t *testing.T) {
 	mockService := &mockFeedServiceCompat{}
 	
 	// Create handler
-	handler := NewFeedHandler(mockService)
+	mockEnrichment := &mockEnrichmentService{}
+	handler := NewFeedHandler(mockService, mockEnrichment)
 	
 	// Create API
 	api, router := api.NewAPI()

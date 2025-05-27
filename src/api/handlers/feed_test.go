@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"digests-app-api/core/domain"
+	"digests-app-api/core/interfaces"
 	"github.com/danielgtaylor/huma/v2/humatest"
 )
 
@@ -25,9 +26,33 @@ func (m *mockFeedService) ParseSingleFeed(ctx context.Context, url string) (*dom
 	return nil, nil
 }
 
+// mockEnrichmentService is a mock implementation of the content enrichment service
+type mockEnrichmentService struct{}
+
+func (m *mockEnrichmentService) ExtractMetadata(ctx context.Context, url string) (*interfaces.MetadataResult, error) {
+	return nil, nil
+}
+
+func (m *mockEnrichmentService) ExtractMetadataBatch(ctx context.Context, urls []string) map[string]*interfaces.MetadataResult {
+	return make(map[string]*interfaces.MetadataResult)
+}
+
+func (m *mockEnrichmentService) ExtractColor(ctx context.Context, imageURL string) (*domain.RGBColor, error) {
+	return nil, nil
+}
+
+func (m *mockEnrichmentService) ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor {
+	return make(map[string]*domain.RGBColor)
+}
+
+func (m *mockEnrichmentService) GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error) {
+	return nil, nil
+}
+
 func TestNewFeedHandler(t *testing.T) {
 	mockService := &mockFeedService{}
-	handler := NewFeedHandler(mockService)
+	mockEnrichment := &mockEnrichmentService{}
+	handler := NewFeedHandler(mockService, mockEnrichment)
 	
 	if handler == nil {
 		t.Error("NewFeedHandler returned nil")
@@ -40,7 +65,8 @@ func TestNewFeedHandler(t *testing.T) {
 
 func TestFeedHandler_RegisterRoutes(t *testing.T) {
 	mockService := &mockFeedService{}
-	handler := NewFeedHandler(mockService)
+	mockEnrichment := &mockEnrichmentService{}
+	handler := NewFeedHandler(mockService, mockEnrichment)
 	
 	// Create test API
 	_, api := humatest.New(t)
@@ -88,7 +114,8 @@ func TestFeedHandler_ParseFeeds_Success(t *testing.T) {
 		},
 	}
 	
-	handler := NewFeedHandler(mockService)
+	mockEnrichment := &mockEnrichmentService{}
+	handler := NewFeedHandler(mockService, mockEnrichment)
 	_, api := humatest.New(t)
 	handler.RegisterRoutes(api)
 	
@@ -108,7 +135,8 @@ func TestFeedHandler_ParseFeeds_Success(t *testing.T) {
 
 func TestFeedHandler_ParseFeeds_ValidationError(t *testing.T) {
 	mockService := &mockFeedService{}
-	handler := NewFeedHandler(mockService)
+	mockEnrichment := &mockEnrichmentService{}
+	handler := NewFeedHandler(mockService, mockEnrichment)
 	_, api := humatest.New(t)
 	handler.RegisterRoutes(api)
 	
@@ -131,7 +159,8 @@ func TestFeedHandler_ParseFeeds_ServiceError(t *testing.T) {
 		},
 	}
 	
-	handler := NewFeedHandler(mockService)
+	mockEnrichment := &mockEnrichmentService{}
+	handler := NewFeedHandler(mockService, mockEnrichment)
 	_, api := humatest.New(t)
 	handler.RegisterRoutes(api)
 	

@@ -126,6 +126,14 @@ func (s *FeedService) ParseSingleFeed(ctx context.Context, feedURL string) (*dom
 	return feeds[0], nil
 }
 
+// ParseFeedsWithConfig parses multiple RSS/Atom feeds with enrichment configuration
+func (s *FeedService) ParseFeedsWithConfig(ctx context.Context, urls []string, config interface{}) ([]*domain.Feed, error) {
+	// For now, just delegate to ParseFeeds
+	// The actual enrichment configuration will be handled at the API layer
+	// This method exists to satisfy the interface and prepare for future enhancements
+	return s.ParseFeeds(ctx, urls)
+}
+
 // parseFeedContent parses feed content from bytes
 func (s *FeedService) parseFeedContent(content []byte, feedURL string) (*domain.Feed, error) {
 	if len(content) == 0 {
