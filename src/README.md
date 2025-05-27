@@ -4,11 +4,13 @@ A high-performance RSS/Atom feed aggregation and discovery API built with Go, fo
 
 ## Features
 
-- **Feed Parsing**: Parse RSS 2.0 and Atom feeds with caching
+- **Feed Parsing**: Parse RSS 2.0, Atom, and Podcast feeds with rich metadata
+- **Article Metadata Extraction**: Extract Open Graph tags and thumbnails from article pages
+- **Thumbnail Color Extraction**: Extract prominent colors from article thumbnails using K-means clustering
+- **Feed Discovery**: Discover RSS feeds from websites
 - **Concurrent Processing**: Parse multiple feeds simultaneously with rate limiting
-- **Feed Discovery**: Search for RSS feeds (extensible with external APIs)
-- **URL Sharing**: Create shareable collections of feed URLs
-- **Caching**: Configurable caching with Redis or in-memory storage
+- **Caching**: Multi-level caching with Redis or in-memory storage
+- **API Compatibility**: Backward compatible with legacy API v1
 - **OpenAPI Documentation**: Auto-generated API documentation with Swagger UI
 - **Production Ready**: Structured logging, graceful shutdown, health checks
 
@@ -67,22 +69,50 @@ The API will be available at `http://localhost:8000`
 
 ### Parse Multiple Feeds
 ```bash
-POST /feeds
+POST /parse
 Content-Type: application/json
 
 {
   "urls": [
     "https://example.com/feed1.xml",
     "https://example.com/feed2.xml"
-  ],
-  "page": 1,
-  "items_per_page": 50
+  ]
 }
 ```
 
 ### Parse Single Feed
 ```bash
 GET /feed?url=https://example.com/feed.xml&page=1&items_per_page=50
+```
+
+### Discover Feeds
+```bash
+POST /discover
+Content-Type: application/json
+
+{
+  "url": "https://example.com"
+}
+```
+
+### Extract Metadata
+```bash
+POST /metadata
+Content-Type: application/json
+
+{
+  "urls": ["https://example.com/article1", "https://example.com/article2"]
+}
+```
+
+### Validate URL
+```bash
+POST /validate
+Content-Type: application/json
+
+{
+  "url": "https://example.com/feed.xml"
+}
 ```
 
 ## Configuration
@@ -152,8 +182,8 @@ make docker-run
 ## Project Structure
 
 ### Core Layer
-- **Domain Models**: Feed, FeedItem, Share, SearchResult
-- **Services**: FeedService, SearchService, ShareService
+- **Domain Models**: Feed, FeedItem, Share, SearchResult, RGBColor
+- **Services**: FeedService, SearchService, ShareService, MetadataService, ThumbnailColorService
 - **Interfaces**: Cache, HTTPClient, Logger, ShareStorage
 
 ### Infrastructure Layer
