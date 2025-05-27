@@ -25,6 +25,7 @@ type FeedService interface {
 type ThumbnailColorService interface {
 	ExtractColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
 	ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor
+	GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
 }
 
 // FeedHandler handles feed-related HTTP requests
@@ -134,10 +135,35 @@ func (h *FeedHandler) ParseFeeds(ctx context.Context, input *ParseFeedsInput) (*
 		}
 	}
 
-	// Get colors if thumbnail service is available
-	var thumbnailColors map[string]*domain.RGBColor
+	// Check cache for already computed colors
+	thumbnailColors := make(map[string]*domain.RGBColor)
 	if h.thumbnailColorService != nil && len(thumbnailURLs) > 0 {
-		thumbnailColors = h.thumbnailColorService.ExtractColorBatch(ctx, thumbnailURLs)
+		// First, check which colors are already in cache
+		for _, url := range thumbnailURLs {
+			// Try to get from cache without computing
+			if cached, err := h.thumbnailColorService.GetCachedColor(ctx, url); err == nil && cached != nil {
+				thumbnailColors[url] = cached
+			}
+		}
+		
+		// Collect URLs that need color extraction
+		var urlsToProcess []string
+		for _, url := range thumbnailURLs {
+			if _, exists := thumbnailColors[url]; !exists {
+				urlsToProcess = append(urlsToProcess, url)
+			}
+		}
+		
+		// If we have URLs to process, do it in the background
+		if len(urlsToProcess) > 0 {
+			// Create a new context that won't be cancelled when request ends
+			backgroundCtx := context.Background()
+			
+			// Process colors in background
+			go func() {
+				h.thumbnailColorService.ExtractColorBatch(backgroundCtx, urlsToProcess)
+			}()
+		}
 	}
 
 	// Convert directly to V1 format for compatibility with colors

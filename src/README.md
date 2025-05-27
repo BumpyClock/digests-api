@@ -60,6 +60,22 @@ make run
 
 The API will be available at `http://localhost:8000`
 
+### Development with Hot Reload
+
+For development with automatic hot reloading using [Air](https://github.com/cosmtrek/air):
+
+1. Install Air:
+```bash
+make install-air
+```
+
+2. Run with hot reload:
+```bash
+make dev
+```
+
+Air will automatically rebuild and restart the server when you make changes to any Go files.
+
 ### API Documentation
 
 - OpenAPI Spec: `http://localhost:8000/openapi.json`

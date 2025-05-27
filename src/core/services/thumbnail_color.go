@@ -12,16 +12,21 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"net/http"
+	"net/url"
+	"strings"
+	"sync"
 	"time"
 	
 	"digests-app-api/core/domain"
 	"digests-app-api/core/interfaces"
 	"github.com/EdlinOrg/prominentcolor"
+	_ "golang.org/x/image/webp" // WebP support
 )
 
 const (
 	defaultColorValue = 128
 	httpTimeout      = 10 * time.Second
+	userAgent        = "Mozilla/5.0 (compatible; FeedParser/1.0)"
 )
 
 // ThumbnailColorService handles color extraction from images
@@ -61,15 +66,20 @@ func (s *ThumbnailColorService) ExtractColor(ctx context.Context, imageURL strin
 	// Extract color
 	color, err := s.extractColorFromURL(ctx, imageURL)
 	if err != nil {
-		s.deps.Logger.Error("Failed to extract color from thumbnail", map[string]interface{}{
+		s.deps.Logger.Debug("Failed to extract color from thumbnail", map[string]interface{}{
 			"url":   imageURL,
 			"error": err.Error(),
 		})
 		color = s.defaultColor()
 	}
+	
+	// Ensure color is not nil
+	if color == nil {
+		color = s.defaultColor()
+	}
 
 	// Cache the result
-	if s.deps.Cache != nil {
+	if s.deps.Cache != nil && color != nil {
 		cacheKey := fmt.Sprintf("thumbnailColor:%s", imageURL)
 		cacheData := fmt.Sprintf("%d,%d,%d", color.R, color.G, color.B)
 		_ = s.deps.Cache.Set(ctx, cacheKey, []byte(cacheData), 24*time.Hour)
@@ -79,15 +89,39 @@ func (s *ThumbnailColorService) ExtractColor(ctx context.Context, imageURL strin
 }
 
 // extractColorFromURL downloads and extracts color from image
-func (s *ThumbnailColorService) extractColorFromURL(ctx context.Context, imageURL string) (*domain.RGBColor, error) {
+func (s *ThumbnailColorService) extractColorFromURL(ctx context.Context, imageURL string) (color *domain.RGBColor, err error) {
+	// Add panic recovery like the original code
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.deps.Logger.Debug("Recovered from panic in color extraction", map[string]interface{}{
+				"url":   imageURL,
+				"panic": fmt.Sprintf("%v", rec),
+			})
+			// Return default color on panic
+			color = s.defaultColor()
+			err = fmt.Errorf("panic recovered: %v", rec)
+		}
+	}()
+
+	// Validate URL
+	parsedURL, parseErr := url.Parse(imageURL)
+	if parseErr != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return nil, fmt.Errorf("invalid image URL: %s", imageURL)
+	}
+	
+	// Skip SVG files as they can't be decoded as raster images
+	if strings.HasSuffix(strings.ToLower(imageURL), ".svg") {
+		return nil, fmt.Errorf("SVG images are not supported")
+	}
+
 	// Create request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set user agent
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; FeedParser/1.0)")
+	// Set user agent from original code
+	req.Header.Set("User-Agent", userAgent)
 
 	// Download image
 	resp, err := s.httpClient.Do(req)
@@ -108,11 +142,20 @@ func (s *ThumbnailColorService) extractColorFromURL(ctx context.Context, imageUR
 
 	// Convert to NRGBA for processing
 	bounds := img.Bounds()
+	if bounds.Empty() {
+		return nil, fmt.Errorf("image has empty bounds")
+	}
+	
 	imgNRGBA := image.NewNRGBA(bounds)
+	if imgNRGBA == nil {
+		return nil, fmt.Errorf("failed to create NRGBA image")
+	}
+	
 	draw.Draw(imgNRGBA, bounds, img, bounds.Min, draw.Src)
 
-	// Extract prominent color using K-means
-	colors, err := prominentcolor.KmeansWithAll(
+	// Try to extract color with masks first
+	var colors []prominentcolor.ColorItem
+	colors, err = prominentcolor.KmeansWithAll(
 		prominentcolor.ArgumentDefault,
 		imgNRGBA,
 		prominentcolor.DefaultK,
@@ -120,8 +163,13 @@ func (s *ThumbnailColorService) extractColorFromURL(ctx context.Context, imageUR
 		prominentcolor.GetDefaultMasks(),
 	)
 	
+	// If no colors found or error, try without masks
 	if err != nil || len(colors) == 0 {
-		// Try without background mask
+		s.deps.Logger.Debug("Retrying color extraction without masks", map[string]interface{}{
+			"url": imageURL,
+			"error": err,
+		})
+		
 		colors, err = prominentcolor.KmeansWithAll(
 			prominentcolor.ArgumentDefault,
 			imgNRGBA,
@@ -129,9 +177,16 @@ func (s *ThumbnailColorService) extractColorFromURL(ctx context.Context, imageUR
 			1,
 			nil,
 		)
+		
+		// If still no colors, return error
 		if err != nil || len(colors) == 0 {
-			return nil, fmt.Errorf("failed to extract color: %w", err)
+			return nil, fmt.Errorf("no colors extracted from image")
 		}
+	}
+
+	// Safety check before accessing colors[0]
+	if len(colors) == 0 {
+		return nil, fmt.Errorf("color array is empty")
 	}
 
 	// Return the most prominent color
@@ -151,36 +206,80 @@ func (s *ThumbnailColorService) defaultColor() *domain.RGBColor {
 	}
 }
 
+// GetCachedColor retrieves a color from cache without computing it
+func (s *ThumbnailColorService) GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error) {
+	if imageURL == "" {
+		return nil, fmt.Errorf("empty image URL")
+	}
+
+	// Check cache only
+	if s.deps.Cache != nil {
+		cacheKey := fmt.Sprintf("thumbnailColor:%s", imageURL)
+		if data, err := s.deps.Cache.Get(ctx, cacheKey); err == nil && data != nil {
+			var color domain.RGBColor
+			// Simple parsing - assumes format "R,G,B"
+			if _, err := fmt.Sscanf(string(data), "%d,%d,%d", &color.R, &color.G, &color.B); err == nil {
+				return &color, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("color not found in cache")
+}
+
 // ExtractColorBatch extracts colors for multiple URLs concurrently
 func (s *ThumbnailColorService) ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor {
 	results := make(map[string]*domain.RGBColor)
+	resultsMutex := sync.Mutex{}
 	
-	// Use a channel to limit concurrency
-	semaphore := make(chan struct{}, 5)
-	resultChan := make(chan struct {
-		url   string
-		color *domain.RGBColor
-	}, len(imageURLs))
+	// Log batch processing
+	s.deps.Logger.Debug("Starting batch color extraction", map[string]interface{}{
+		"count": len(imageURLs),
+	})
+	
+	// Use a wait group and limited concurrency
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, 5) // Reasonable concurrency for background processing
 
 	// Process URLs concurrently
 	for _, url := range imageURLs {
+		wg.Add(1)
 		go func(imageURL string) {
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			color, _ := s.ExtractColor(ctx, imageURL)
-			resultChan <- struct {
-				url   string
-				color *domain.RGBColor
-			}{url: imageURL, color: color}
+			defer wg.Done()
+			
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+				
+				// Extract color - will use cache if available
+				color, err := s.ExtractColor(ctx, imageURL)
+				if err != nil {
+					// Log error but don't store default - let it compute next time
+					s.deps.Logger.Debug("Failed to extract color in batch", map[string]interface{}{
+						"url":   imageURL,
+						"error": err.Error(),
+					})
+					return
+				}
+				
+				resultsMutex.Lock()
+				results[imageURL] = color
+				resultsMutex.Unlock()
+				
+			case <-ctx.Done():
+				// Context cancelled
+				return
+			}
 		}(url)
 	}
 
-	// Collect results
-	for i := 0; i < len(imageURLs); i++ {
-		result := <-resultChan
-		results[result.url] = result.color
-	}
+	// Wait for all goroutines to complete
+	wg.Wait()
+	
+	s.deps.Logger.Debug("Completed batch color extraction", map[string]interface{}{
+		"requested": len(imageURLs),
+		"extracted": len(results),
+	})
 
 	return results
 }

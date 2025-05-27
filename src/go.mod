@@ -10,6 +10,7 @@ require (
 	github.com/PuerkitoBio/goquery v1.10.3
 	github.com/go-shiori/go-readability v0.0.0-20250217085726-9f5bf5ca7612
 	github.com/gocolly/colly v1.2.0
+	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/nitishm/go-rejson/v4 v4.2.0
@@ -46,7 +47,6 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/gomodule/redigo v1.9.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -79,3 +79,4 @@ require (
 )
 
 // replace github.com/BumpyClock/go-link2json => ../../go-link2json
+require golang.org/x/image v0.15.0

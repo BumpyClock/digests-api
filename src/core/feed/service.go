@@ -392,25 +392,52 @@ func detectFeedType(feed *gofeed.Feed) string {
 		return "podcast"
 	}
 	
-	// Check items for enclosures
+	// Check for podcast namespace
+	if feed.Extensions != nil {
+		// Check for iTunes namespace
+		if _, hasITunes := feed.Extensions["itunes"]; hasITunes {
+			return "podcast"
+		}
+		// Check for podcast namespace
+		if _, hasPodcast := feed.Extensions["podcast"]; hasPodcast {
+			return "podcast"
+		}
+	}
+	
+	// Check items for audio/video enclosures
+	audioVideoCount := 0
 	for _, item := range feed.Items {
 		if len(item.Enclosures) > 0 {
 			for _, enc := range item.Enclosures {
 				if strings.HasPrefix(enc.Type, "audio/") || strings.HasPrefix(enc.Type, "video/") {
-					return "podcast"
+					audioVideoCount++
+					break
 				}
 			}
 		}
+		// Also check item-level iTunes extensions
+		if item.ITunesExt != nil {
+			audioVideoCount++
+		}
 	}
 	
-	// Check for news/article indicators
-	if strings.Contains(strings.ToLower(feed.Title), "news") ||
-		strings.Contains(strings.ToLower(feed.Description), "news") ||
-		strings.Contains(strings.ToLower(feed.Title), "blog") {
-		return "article"
+	// If most items have audio/video, it's likely a podcast
+	if len(feed.Items) > 0 && audioVideoCount > len(feed.Items)/2 {
+		return "podcast"
 	}
 	
-	return "rss"
+	// Check for podcast keywords in title or description
+	feedText := strings.ToLower(feed.Title + " " + feed.Description)
+	podcastKeywords := []string{"podcast", "episode", "show", "audio", "listen"}
+	for _, keyword := range podcastKeywords {
+		if strings.Contains(feedText, keyword) {
+			return "podcast"
+		}
+	}
+	
+	// Default to "article" for most feeds (not "rss")
+	// since most RSS feeds are article/blog feeds
+	return "article"
 }
 
 // parseIntOrZero safely parses a string to int, returns 0 on error

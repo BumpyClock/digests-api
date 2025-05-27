@@ -11,6 +11,17 @@ help: ## Show this help message
 run: ## Run the API server
 	@go run cmd/api/main.go
 
+.PHONY: dev
+dev: ## Run the API server with hot reload (requires Air)
+	@which air > /dev/null || (echo "Air not installed. Run 'make install-air' first." && exit 1)
+	@air
+
+.PHONY: install-air
+install-air: ## Install Air for hot reloading
+	@echo "Installing Air..."
+	@go install github.com/cosmtrek/air@latest
+	@echo "Air installed successfully!"
+
 .PHONY: build
 build: ## Build the API binary
 	@echo "Building API binary..."

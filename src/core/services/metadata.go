@@ -17,6 +17,10 @@ import (
 	"github.com/gocolly/colly"
 )
 
+const (
+	collyUserAgent = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+)
+
 
 // MetadataService handles metadata extraction from URLs
 type MetadataService struct {
@@ -93,13 +97,15 @@ func (s *MetadataService) extractFromURL(targetURL string) *interfaces.MetadataR
 	}
 
 	c := colly.NewCollector(
-		colly.UserAgent("facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"),
+		colly.UserAgent(collyUserAgent),
 		colly.MaxBodySize(5*1024*1024), // 5MB limit
 		colly.Async(false),
+		colly.AllowURLRevisit(),
 	)
 
 	// Set timeout
 	c.SetRequestTimeout(10 * time.Second)
+	
 
 	result := &interfaces.MetadataResult{
 		Images: []string{},
@@ -200,12 +206,23 @@ func (s *MetadataService) extractFromURL(targetURL string) *interfaces.MetadataR
 		}
 	})
 
+	// Add error handling
+	c.OnError(func(r *colly.Response, err error) {
+		s.deps.Logger.Debug("Error visiting URL for metadata", map[string]interface{}{
+			"url":   targetURL,
+			"error": err.Error(),
+			"status": r.StatusCode,
+		})
+	})
+
 	// Visit the page
 	if err := c.Visit(targetURL); err != nil {
-		s.deps.Logger.Error("Failed to visit URL for metadata extraction", map[string]interface{}{
+		s.deps.Logger.Debug("Failed to visit URL for metadata extraction", map[string]interface{}{
 			"url":   targetURL,
 			"error": err.Error(),
 		})
+		// Return empty result instead of nil to prevent issues
+		return result
 	}
 
 	// If no thumbnail found in meta tags, try to find the first significant image

@@ -12,6 +12,7 @@ import (
 type ThumbnailColorService interface {
 	ExtractColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
 	ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor
+	GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
 }
 
 // MetadataResult contains extracted metadata from a webpage

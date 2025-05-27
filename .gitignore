@@ -12,6 +12,10 @@ src/tmp/main.exe
 src/tmp/main.exe
 tmp/*
 tmp/
+
+# Air live reload
+.air.log
+air.log
 .claude/
 
 # Test artifacts

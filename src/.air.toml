@@ -3,29 +3,51 @@ testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
-  args_bin = ["server"]
-  bin = "tmp\\main.exe"
-  cmd = "go build -o ./tmp/main.exe ."
+  # Build command for our API
+  cmd = "go build -o ./tmp/main ./cmd/api/main.go"
+  # Binary path
+  bin = "tmp/main"
+  # Full binary execution command
+  full_bin = "./tmp/main"
+  # Optional: Use with debugger
+  # full_bin = "dlv exec ./tmp/main --listen=127.0.0.1:2345 --headless=true --api-version=2 --accept-multiclient --continue --log --"
+  
+  # Build delay after file change
   delay = 1000
-  exclude_dir = ["assets", "tmp", "vendor", "testdata", ".vscode", "build_scripts", "cache"]
+  
+  # Directories to exclude
+  exclude_dir = ["assets", "tmp", "vendor", "testdata", ".vscode", "build_scripts", "bin", "docs", "tests", ".git", "infrastructure/cache/memory/testdata", "infrastructure/cache/redis/testdata"]
+  
+  # File patterns to exclude
   exclude_file = []
-  exclude_regex = ["_test.go"]
-  exclude_unchanged = false
+  exclude_regex = ["_test\\.go", ".*\\.md"]
+  exclude_unchanged = true
+  
+  # Watch settings
   follow_symlink = false
-  full_bin = "dlv exec ./tmp/main.exe --listen=127.0.0.1:2345 --headless=true --api-version=2 --accept-multiclient --continue --log -- "
   include_dir = []
-  include_ext = ["go", "tpl", "tmpl", "html"]
+  include_ext = ["go", "toml", "env"]
   include_file = []
-  kill_delay = "0s"
-  log = "build-errors.log"
+  
+  # Process management
+  kill_delay = "500ms"
+  send_interrupt = true
+  stop_on_error = true
+  
+  # Logging
+  log = "tmp/build-errors.log"
+  
+  # Polling (use if file watching doesn't work)
   poll = false
   poll_interval = 0
+  
+  # Pre/post commands
   post_cmd = []
   pre_cmd = []
+  
+  # Rerun settings
   rerun = false
   rerun_delay = 500
-  send_interrupt = false
-  stop_on_error = false
 
 [color]
   app = ""
@@ -39,7 +61,8 @@ tmp_dir = "tmp"
   time = false
 
 [misc]
-  clean_on_exit = false
+  # Clean tmp directory on exit
+  clean_on_exit = true
 
 [proxy]
   app_port = 0
