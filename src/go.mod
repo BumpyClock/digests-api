@@ -57,4 +57,4 @@ require (
 )
 
 // replace github.com/BumpyClock/go-link2json => ../../go-link2json
-require golang.org/x/image v0.15.0
+require golang.org/x/image v0.18.0
