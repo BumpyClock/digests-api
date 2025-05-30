@@ -53,6 +53,11 @@ type ContentEnrichmentService interface {
 	GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error)
 }
 
+// ReaderService defines operations for reader view extraction
+type ReaderService interface {
+	ExtractReaderViews(ctx context.Context, urls []string) []domain.ReaderView
+}
+
 // MetadataResult represents the result of metadata extraction
 type MetadataResult struct {
 	Title       string

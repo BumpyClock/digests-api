@@ -12,7 +12,7 @@
     COPY src/ .
     
     # Build the Go app (static binary if possible)
-    RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+    RUN CGO_ENABLED=0 GOOS=linux go build -o main ./cmd/api
     
     # ---------- Final Stage ----------
    # Start a new stage from scratch

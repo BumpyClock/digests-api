@@ -11,6 +11,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 )
 
 // APIConfig holds configuration for the API
@@ -24,6 +25,16 @@ type APIConfig struct {
 func NewAPI() (huma.API, chi.Router) {
 	// Create Chi router
 	router := chi.NewRouter()
+	
+	// Configure CORS
+	router.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"*"}, // Allow all origins in development
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300, // Maximum value not ignored by any of major browsers
+	}))
 	
 	// Create Huma API configuration
 	config := huma.DefaultConfig("Digests API", "1.0.0")
@@ -42,6 +53,16 @@ func NewAPI() (huma.API, chi.Router) {
 func NewAPIWithMiddleware(cfg APIConfig) (huma.API, chi.Router) {
 	// Create Chi router
 	router := chi.NewRouter()
+	
+	// Configure CORS (should be first middleware)
+	router.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"*"}, // Allow all origins in development
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300, // Maximum value not ignored by any of major browsers
+	}))
 	
 	// Apply middleware
 	if cfg.Logger != nil {

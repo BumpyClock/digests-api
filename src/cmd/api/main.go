@@ -17,6 +17,7 @@ import (
 	"digests-app-api/api/handlers"
 	"digests-app-api/core/feed"
 	"digests-app-api/core/interfaces"
+	"digests-app-api/core/reader"
 	"digests-app-api/core/search"
 	"digests-app-api/core/services"
 	"digests-app-api/infrastructure/cache/memory"
@@ -94,6 +95,7 @@ func main() {
 	// Create services
 	feedService := feed.NewFeedService(deps)
 	searchService := search.NewSearchService(deps)
+	readerService := reader.NewService(cache, logger)
 	
 	// Create unified enrichment service with configurable cache TTL
 	colorCacheTTL := time.Duration(cfg.Cache.ColorCacheDays) * 24 * time.Hour
@@ -122,6 +124,9 @@ func main() {
 	
 	validateHandler := handlers.NewValidateHandler(httpClient)
 	validateHandler.RegisterRoutes(humaAPI)
+	
+	readerHandler := handlers.NewReaderHandler(readerService)
+	readerHandler.RegisterRoutes(humaAPI)
 
 	// Create HTTP server
 	srv := &http.Server{
