@@ -153,7 +153,7 @@ func TestConfig_Validate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "cache type must be 'redis' or 'memory'",
+			errMsg:  "cache type must be 'redis', 'memory', or 'sqlite'",
 		},
 		{
 			name: "redis type with empty address",
