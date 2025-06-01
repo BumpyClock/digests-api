@@ -3,7 +3,9 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -59,8 +61,24 @@ func FuzzCacheValue(data []byte) int {
 	if err == nil {
 		// Try to get it back
 		retrieved, err := cache.Get(ctx, key)
-		if err == nil && len(retrieved) != len(data) {
-			panic("Data corruption detected")
+		if err == nil {
+			// First do a quick comparison using bytes.Equal
+			if !bytes.Equal(retrieved, data) {
+				// If not equal, find the exact mismatch for debugging
+				if len(retrieved) != len(data) {
+					panic(fmt.Sprintf("Data corruption detected: length mismatch (expected %d bytes, got %d bytes)", len(data), len(retrieved)))
+				}
+				
+				// Perform byte-by-byte comparison to find exact mismatch
+				for i := 0; i < len(data); i++ {
+					if retrieved[i] != data[i] {
+						panic(fmt.Sprintf("Data corruption detected: byte mismatch at position %d (expected %#x, got %#x)", i, data[i], retrieved[i]))
+					}
+				}
+				
+				// This should never be reached if bytes.Equal returned false
+				panic("Data corruption detected: bytes.Equal returned false but no mismatch found")
+			}
 		}
 	}
 	
