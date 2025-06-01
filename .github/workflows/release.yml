@@ -7,33 +7,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build Release Binaries
+  build-linux:
+    name: Build Linux Binaries
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          # Linux builds
-          - os: linux
-            arch: amd64
-            suffix: ""
-          - os: linux
-            arch: arm64
-            suffix: ""
-          # Windows builds
-          - os: windows
-            arch: amd64
-            suffix: ".exe"
-          - os: windows
-            arch: arm64
-            suffix: ".exe"
-          # macOS builds
-          - os: darwin
-            arch: amd64
-            suffix: ""
-          - os: darwin
-            arch: arm64
-            suffix: ""
+        arch: [amd64, arm64]
     
     steps:
     - name: Checkout code
@@ -44,14 +23,24 @@ jobs:
       with:
         go-version: '1.22'
 
+    - name: Install cross-compilation tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+
     - name: Build binary
       env:
-        GOOS: ${{ matrix.os }}
+        GOOS: linux
         GOARCH: ${{ matrix.arch }}
         CGO_ENABLED: 1
       run: |
         cd src
-        OUTPUT_NAME="digests-api-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.suffix }}"
+        OUTPUT_NAME="digests-api-linux-${{ matrix.arch }}"
+        
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          export CC=aarch64-linux-gnu-gcc
+        fi
+        
         go build -v -ldflags="-s -w" -o ../build/${OUTPUT_NAME} ./cmd/api
         
     - name: Upload artifacts
