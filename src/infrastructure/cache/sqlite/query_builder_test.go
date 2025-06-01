@@ -133,7 +133,7 @@ func TestValidateKey(t *testing.T) {
 	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateKey(tt.key)
+			err := ValidateKey(tt.key, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateKey() error = %v, wantErr %v", err, tt.wantErr)
 			}

@@ -10,6 +10,11 @@ import (
 	"strings"
 )
 
+// Logger interface - minimal interface to avoid circular dependencies
+type Logger interface {
+	Warn(msg string, fields map[string]interface{})
+}
+
 // QueryBuilder provides a safe way to build SQL queries with automatic parameterization
 type QueryBuilder struct {
 	query  string
@@ -182,7 +187,7 @@ func (qb *QueryBuilder) Build() (string, []interface{}) {
 }
 
 // ValidateKey validates cache key to prevent injection and other issues
-func ValidateKey(key string) error {
+func ValidateKey(key string, logger Logger) error {
 	if key == "" {
 		return errors.New("key cannot be empty")
 	}
@@ -214,12 +219,26 @@ func ValidateKey(key string) error {
 	for _, pattern := range suspiciousPatterns {
 		if strings.Contains(key, pattern) {
 			// Log warning but don't reject - parameterization handles it
-			// In production, you might want to log this for monitoring
-			// fmt.Printf("Warning: suspicious pattern in key: %q\n", pattern)
+			if logger != nil {
+				logger.Warn("Suspicious pattern detected in cache key", map[string]interface{}{
+					"pattern": pattern,
+					"key_length": len(key),
+					"key_preview": truncateKey(key),
+				})
+			}
 		}
 	}
 	
 	return nil
+}
+
+// truncateKey returns a safe preview of the key for logging
+func truncateKey(key string) string {
+	const maxPreview = 50
+	if len(key) <= maxPreview {
+		return key
+	}
+	return key[:maxPreview] + "..."
 }
 
 // ValidateValue validates cache value

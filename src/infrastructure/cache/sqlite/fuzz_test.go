@@ -91,7 +91,7 @@ func FuzzQueryBuilder(data []byte) int {
 	_ = params
 	
 	// Validate functions should never panic
-	_ = ValidateKey(part1)
+	_ = ValidateKey(part1, nil)
 	_ = ValidateValue(data)
 	
 	return 1

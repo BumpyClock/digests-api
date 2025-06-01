@@ -20,10 +20,16 @@ import (
 type Client struct {
 	db       *sql.DB
 	filePath string
+	logger   Logger // Use local Logger interface to avoid circular dependencies
 }
 
 // NewSQLiteCache creates a new SQLite cache client
 func NewSQLiteCache(filePath string) (*Client, error) {
+	return NewSQLiteCacheWithLogger(filePath, nil)
+}
+
+// NewSQLiteCacheWithLogger creates a new SQLite cache client with optional logger
+func NewSQLiteCacheWithLogger(filePath string, logger Logger) (*Client, error) {
 	if filePath == "" {
 		filePath = "cache.db"
 	}
@@ -42,6 +48,7 @@ func NewSQLiteCache(filePath string) (*Client, error) {
 	client := &Client{
 		db:       db,
 		filePath: filePath,
+		logger:   logger,
 	}
 	
 	// Initialize schema
@@ -73,7 +80,7 @@ func (c *Client) initSchema() error {
 // Get retrieves a value from the cache
 func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 	// Validate key
-	if err := ValidateKey(key); err != nil {
+	if err := ValidateKey(key, c.logger); err != nil {
 		return nil, fmt.Errorf("invalid key: %w", err)
 	}
 	
@@ -100,7 +107,7 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 // Set stores a value in the cache with TTL
 func (c *Client) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	// Validate inputs
-	if err := ValidateKey(key); err != nil {
+	if err := ValidateKey(key, c.logger); err != nil {
 		return fmt.Errorf("invalid key: %w", err)
 	}
 	
@@ -125,7 +132,7 @@ func (c *Client) Set(ctx context.Context, key string, value []byte, ttl time.Dur
 // Delete removes a value from the cache
 func (c *Client) Delete(ctx context.Context, key string) error {
 	// Validate key
-	if err := ValidateKey(key); err != nil {
+	if err := ValidateKey(key, c.logger); err != nil {
 		return fmt.Errorf("invalid key: %w", err)
 	}
 	
