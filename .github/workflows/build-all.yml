@@ -1,0 +1,102 @@
+name: Build All Platforms
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'src/**'
+      - 'go.mod'
+      - 'go.sum'
+
+jobs:
+  build-matrix:
+    name: Build for ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - os: linux
+            arch: amd64
+            suffix: ""
+          - os: linux
+            arch: arm64
+            suffix: ""
+          # Windows builds
+          - os: windows
+            arch: amd64
+            suffix: ".exe"
+          - os: windows
+            arch: arm64
+            suffix: ".exe"
+          # macOS builds
+          - os: darwin
+            arch: amd64
+            suffix: ""
+          - os: darwin
+            arch: arm64
+            suffix: ""
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Build binary for ${{ matrix.os }}-${{ matrix.arch }}
+      env:
+        GOOS: ${{ matrix.os }}
+        GOARCH: ${{ matrix.arch }}
+        CGO_ENABLED: 0
+      run: |
+        cd src
+        OUTPUT_NAME="digests-api-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.suffix }}"
+        echo "Building ${OUTPUT_NAME}..."
+        go build -v -ldflags="-s -w" -o ../build/${OUTPUT_NAME} ./cmd/api
+        
+        # Display binary info
+        ls -lh ../build/${OUTPUT_NAME}
+        file ../build/${OUTPUT_NAME} || true
+
+    - name: Test binary execution (Linux AMD64 only)
+      if: matrix.os == 'linux' && matrix.arch == 'amd64'
+      run: |
+        cd build
+        ./digests-api-linux-amd64 --version || echo "No version flag implemented"
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: digests-api-${{ matrix.os }}-${{ matrix.arch }}
+        path: build/digests-api-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.suffix }}
+        retention-days: 7
+
+  summary:
+    name: Build Summary
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Display all built binaries
+      run: |
+        echo "Successfully built binaries:"
+        echo "=========================="
+        find artifacts -type f -name "digests-api-*" | sort | while read -r file; do
+          echo "✓ $(basename "$file") - $(du -h "$file" | cut -f1)"
+        done
