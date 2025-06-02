@@ -35,9 +35,9 @@ func createMockRSSReader() io.ReadCloser {
 
 func TestParseSingleFeedWithFlags_OldParserWhenDisabled(t *testing.T) {
 	// Setup
-	mockCache := new(mockCache)
-	mockHTTP := new(mockHTTPClient)
-	mockLogger := new(mockLogger)
+	mockCache := new(MockCache)
+	mockHTTP := new(MockHTTPClient)
+	mockLogger := new(MockLogger)
 	
 	deps := interfaces.Dependencies{
 		Cache:      mockCache,
