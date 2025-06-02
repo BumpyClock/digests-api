@@ -32,7 +32,25 @@ type benchMockHTTPClient struct {
 	responseTime time.Duration
 }
 
-func (m *benchMockHTTPClient) Get(ctx context.Context, url string) (interfaces.HTTPResponse, error) {
+type benchMockResponse struct {
+	statusCode int
+	body       io.ReadCloser
+	headers    map[string]string
+}
+
+func (r *benchMockResponse) StatusCode() int {
+	return r.statusCode
+}
+
+func (r *benchMockResponse) Body() io.ReadCloser {
+	return r.body
+}
+
+func (r *benchMockResponse) Header(key string) string {
+	return r.headers[key]
+}
+
+func (m *benchMockHTTPClient) Get(ctx context.Context, url string) (interfaces.Response, error) {
 	// Simulate network delay
 	if m.responseTime > 0 {
 		time.Sleep(m.responseTime)
@@ -60,14 +78,14 @@ func (m *benchMockHTTPClient) Get(ctx context.Context, url string) (interfaces.H
 	</channel>
 </rss>`
 	
-	return &mockHTTPResponse{
+	return &benchMockResponse{
 		statusCode: 200,
 		body:       io.NopCloser(strings.NewReader(rss)),
 		headers:    make(map[string]string),
 	}, nil
 }
 
-func (m *benchMockHTTPClient) Post(ctx context.Context, url string, contentType string, body io.Reader) (interfaces.HTTPResponse, error) {
+func (m *benchMockHTTPClient) Post(ctx context.Context, url string, body io.Reader) (interfaces.Response, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -169,7 +187,7 @@ func BenchmarkParseFeedContent(b *testing.B) {
 	
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := service.parseFeedContent(content)
+		_, err := service.parseFeedContent(content, "https://example.com/feed.xml")
 		if err != nil {
 			b.Fatal(err)
 		}

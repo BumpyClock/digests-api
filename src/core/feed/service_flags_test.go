@@ -2,6 +2,9 @@ package feed
 
 import (
 	"context"
+	"errors"
+	"io"
+	"strings"
 	"testing"
 
 	"digests-app-api/core/interfaces"
@@ -10,11 +13,31 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
+var ErrCacheMiss = errors.New("key not found")
+
+func createMockRSSReader() io.ReadCloser {
+	rss := `<?xml version="1.0"?>
+	<rss version="2.0">
+		<channel>
+			<title>Test Feed</title>
+			<description>Test Description</description>
+			<link>http://example.com</link>
+			<item>
+				<title>Test Item</title>
+				<description>Test Item Description</description>
+				<link>http://example.com/item1</link>
+				<pubDate>Mon, 02 Jan 2006 15:04:05 MST</pubDate>
+			</item>
+		</channel>
+	</rss>`
+	return io.NopCloser(strings.NewReader(rss))
+}
+
 func TestParseSingleFeedWithFlags_OldParserWhenDisabled(t *testing.T) {
 	// Setup
-	mockCache := new(MockCache)
-	mockHTTP := new(MockHTTPClient)
-	mockLogger := new(MockLogger)
+	mockCache := new(mockCache)
+	mockHTTP := new(mockHTTPClient)
+	mockLogger := new(mockLogger)
 	
 	deps := interfaces.Dependencies{
 		Cache:      mockCache,
@@ -33,7 +56,7 @@ func TestParseSingleFeedWithFlags_OldParserWhenDisabled(t *testing.T) {
 	// Setup expectations
 	feedURL := "http://example.com/feed.rss"
 	mockCache.On("Get", mock.Anything, mock.Anything).Return(nil, ErrCacheMiss)
-	mockHTTP.On("Get", mock.Anything, feedURL).Return(&mockHTTPResponse{
+	mockHTTP.On("Get", mock.Anything, feedURL).Return(&mockResponse{
 		statusCode: 200,
 		body:       createMockRSSReader(),
 		headers:    map[string]string{},
@@ -76,7 +99,7 @@ func TestParseSingleFeedWithFlags_NewParserWhenEnabled(t *testing.T) {
 	// Setup expectations
 	feedURL := "http://example.com/feed.rss"
 	mockCache.On("Get", mock.Anything, mock.Anything).Return(nil, ErrCacheMiss)
-	mockHTTP.On("Get", mock.Anything, feedURL).Return(&mockHTTPResponse{
+	mockHTTP.On("Get", mock.Anything, feedURL).Return(&mockResponse{
 		statusCode: 200,
 		body:       createMockRSSReader(),
 		headers:    map[string]string{},
@@ -128,7 +151,7 @@ func TestParseFeedsWithFlags_CacheDisabled(t *testing.T) {
 	
 	// Should fetch directly
 	for _, url := range urls {
-		mockHTTP.On("Get", mock.Anything, url).Return(&mockHTTPResponse{
+		mockHTTP.On("Get", mock.Anything, url).Return(&mockResponse{
 			statusCode: 200,
 			body:       createMockRSSReader(),
 			headers:    map[string]string{},
@@ -176,7 +199,7 @@ func TestParseFeedsWithFlags_CacheEnabled(t *testing.T) {
 	mockCache.On("Get", mock.Anything, mock.Anything).Return(nil, ErrCacheMiss)
 	mockCache.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	
-	mockHTTP.On("Get", mock.Anything, urls[0]).Return(&mockHTTPResponse{
+	mockHTTP.On("Get", mock.Anything, urls[0]).Return(&mockResponse{
 		statusCode: 200,
 		body:       createMockRSSReader(),
 		headers:    map[string]string{},

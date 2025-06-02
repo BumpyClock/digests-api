@@ -137,9 +137,9 @@ func (m *mockFeedServiceCompat) ParseFeeds(ctx context.Context, urls []string) (
 }
 
 func (m *mockFeedServiceCompat) ParseSingleFeed(ctx context.Context, url string) (*domain.Feed, error) {
-	feeds, err := m.ParseFeeds(ctx, []string{url})
-	if err != nil || len(feeds) == 0 {
-		return nil, err
-	}
-	return feeds[0], nil
+	return nil, nil
+}
+
+func (m *mockFeedServiceCompat) ParseFeedsWithConfig(ctx context.Context, urls []string, config interface{}) ([]*domain.Feed, error) {
+	return m.ParseFeeds(ctx, urls)
 }

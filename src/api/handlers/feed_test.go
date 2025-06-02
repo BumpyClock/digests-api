@@ -26,6 +26,13 @@ func (m *mockFeedService) ParseSingleFeed(ctx context.Context, url string) (*dom
 	return nil, nil
 }
 
+func (m *mockFeedService) ParseFeedsWithConfig(ctx context.Context, urls []string, config interface{}) ([]*domain.Feed, error) {
+	if m.parseFeedsFunc != nil {
+		return m.parseFeedsFunc(ctx, urls)
+	}
+	return nil, nil
+}
+
 // mockEnrichmentService is a mock implementation of the content enrichment service
 type mockEnrichmentService struct{}
 
