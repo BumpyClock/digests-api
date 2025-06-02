@@ -74,7 +74,8 @@ func (m *mockFeedService) ParseFeedsWithConfig(ctx context.Context, urls []strin
 	return m.ParseFeeds(ctx, urls)
 }
 
-// mockEnrichmentService is a mock implementation of ContentEnrichmentService
+// mockEnrichmentService is a minimal stub of ContentEnrichmentService
+// used for load testing with fast, no-op responses.
 type mockEnrichmentService struct{}
 
 func (m *mockEnrichmentService) ExtractMetadata(ctx context.Context, url string) (*interfaces.MetadataResult, error) {
