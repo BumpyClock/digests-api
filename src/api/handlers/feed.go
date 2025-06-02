@@ -75,6 +75,40 @@ func (h *FeedHandler) ParseFeeds(ctx context.Context, input *ParseFeedsInput) (*
 		return nil, toHumaError(err)
 	}
 
+	// Enrich feed-level metadata (favicon and image fallback)
+	if enrichmentConfig.ExtractMetadata && h.enrichmentService != nil {
+		feedURLs := make([]string, 0)
+		feedURLMap := make(map[string]*domain.Feed)
+		
+		// Collect feed website URLs for metadata extraction
+		for _, feed := range feeds {
+			if feed.Link != "" {
+				feedURLs = append(feedURLs, feed.Link)
+				feedURLMap[feed.Link] = feed
+			}
+		}
+		
+		// Extract metadata for feed websites
+		if len(feedURLs) > 0 {
+			feedMetadataResults := h.enrichmentService.ExtractMetadataBatch(ctx, feedURLs)
+			
+			// Update feeds with metadata
+			for url, metadata := range feedMetadataResults {
+				if feed, exists := feedURLMap[url]; exists && metadata != nil {
+					// Always use website favicon if available
+					if metadata.Favicon != "" {
+						feed.Favicon = metadata.Favicon
+					}
+					
+					// Use OpenGraph image as fallback if feed doesn't have an image
+					if feed.Image == "" && metadata.Thumbnail != "" {
+						feed.Image = metadata.Thumbnail
+					}
+				}
+			}
+		}
+	}
+
 	// Extract article URLs for metadata extraction (if enabled)
 	articleURLs := make([]string, 0)
 	urlToItemMap := make(map[string]*domain.FeedItem)
@@ -188,6 +222,22 @@ func (h *FeedHandler) ParseSingleFeed(ctx context.Context, input *ParseSingleFee
 	feed, err := h.feedService.ParseSingleFeed(ctx, input.URL)
 	if err != nil {
 		return nil, toHumaError(err)
+	}
+
+	// Enrich feed-level metadata (favicon and image fallback)
+	if input.ExtractMetadata && h.enrichmentService != nil && feed.Link != "" {
+		// Extract metadata for feed website
+		if metadata, err := h.enrichmentService.ExtractMetadata(ctx, feed.Link); err == nil && metadata != nil {
+			// Always use website favicon if available
+			if metadata.Favicon != "" {
+				feed.Favicon = metadata.Favicon
+			}
+			
+			// Use OpenGraph image as fallback if feed doesn't have an image
+			if feed.Image == "" && metadata.Thumbnail != "" {
+				feed.Image = metadata.Thumbnail
+			}
+		}
 	}
 
 	// Convert to response DTO

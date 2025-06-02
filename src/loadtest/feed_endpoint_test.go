@@ -70,6 +70,34 @@ func (m *mockFeedService) ParseSingleFeed(ctx context.Context, url string) (*dom
 	}, nil
 }
 
+func (m *mockFeedService) ParseFeedsWithConfig(ctx context.Context, urls []string, config interface{}) ([]*domain.Feed, error) {
+	return m.ParseFeeds(ctx, urls)
+}
+
+// mockEnrichmentService is a minimal stub of ContentEnrichmentService
+// used for load testing with fast, no-op responses.
+type mockEnrichmentService struct{}
+
+func (m *mockEnrichmentService) ExtractMetadata(ctx context.Context, url string) (*interfaces.MetadataResult, error) {
+	return nil, nil
+}
+
+func (m *mockEnrichmentService) ExtractMetadataBatch(ctx context.Context, urls []string) map[string]*interfaces.MetadataResult {
+	return make(map[string]*interfaces.MetadataResult)
+}
+
+func (m *mockEnrichmentService) ExtractColor(ctx context.Context, imageURL string) (*domain.RGBColor, error) {
+	return nil, nil
+}
+
+func (m *mockEnrichmentService) ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor {
+	return make(map[string]*domain.RGBColor)
+}
+
+func (m *mockEnrichmentService) GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error) {
+	return nil, nil
+}
+
 // LoadTestMetrics tracks performance metrics
 type LoadTestMetrics struct {
 	TotalRequests   int64
@@ -88,7 +116,8 @@ func TestFeedsEndpoint_100ConcurrentRequests(t *testing.T) {
 	// Setup
 	apiInstance, router := api.NewAPI()
 	feedService := &mockFeedService{delay: 10 * time.Millisecond}
-	handler := handlers.NewFeedHandler(feedService)
+	enrichmentService := &mockEnrichmentService{}
+	handler := handlers.NewFeedHandler(feedService, enrichmentService)
 	handler.RegisterRoutes(apiInstance)
 	
 	server := httptest.NewServer(router)
@@ -203,7 +232,8 @@ func TestFeedsEndpoint_1000RequestsPerSecond(t *testing.T) {
 	// Setup
 	apiInstance, router := api.NewAPI()
 	feedService := &mockFeedService{delay: 5 * time.Millisecond}
-	handler := handlers.NewFeedHandler(feedService)
+	enrichmentService := &mockEnrichmentService{}
+	handler := handlers.NewFeedHandler(feedService, enrichmentService)
 	handler.RegisterRoutes(apiInstance)
 	
 	server := httptest.NewServer(router)

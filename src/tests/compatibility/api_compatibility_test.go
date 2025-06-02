@@ -16,7 +16,7 @@ import (
 	"digests-app-api/api/dto/responses"
 	"digests-app-api/api/handlers"
 	"digests-app-api/core/domain"
-	"github.com/danielgtaylor/huma/v2"
+	"digests-app-api/core/interfaces"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,8 +28,9 @@ func TestNewAPIReturnsSameFormatAsOld(t *testing.T) {
 	newService := createServiceWithFlags(true)
 	
 	// Create handlers
-	oldHandler := handlers.NewFeedHandler(oldService)
-	newHandler := handlers.NewFeedHandler(newService)
+	enrichmentService := &mockEnrichmentService{}
+	oldHandler := handlers.NewFeedHandler(oldService, enrichmentService)
+	newHandler := handlers.NewFeedHandler(newService, enrichmentService)
 	
 	// Create APIs
 	oldAPI, oldRouter := api.NewAPI()
@@ -120,7 +121,8 @@ func TestStatusCodesMatchOldAPI(t *testing.T) {
 			// Test with both old and new implementation
 			for _, useNewParser := range []bool{false, true} {
 				service := createServiceWithFlags(useNewParser)
-				handler := handlers.NewFeedHandler(service)
+				enrichmentService := &mockEnrichmentService{}
+				handler := handlers.NewFeedHandler(service, enrichmentService)
 				apiInstance, router := api.NewAPI()
 				handler.RegisterRoutes(apiInstance)
 				
@@ -148,7 +150,8 @@ func TestStatusCodesMatchOldAPI(t *testing.T) {
 func TestErrorFormatsAreCompatible(t *testing.T) {
 	// Create service
 	service := createServiceWithFlags(false)
-	handler := handlers.NewFeedHandler(service)
+	enrichmentService := &mockEnrichmentService{}
+	handler := handlers.NewFeedHandler(service, enrichmentService)
 	apiInstance, router := api.NewAPI()
 	handler.RegisterRoutes(apiInstance)
 	
@@ -309,4 +312,27 @@ func TestContinuousCompatibilityChecking(t *testing.T) {
 			assert.NotEmpty(t, check.Endpoint)
 		})
 	}
+}
+
+// mockEnrichmentService is a mock implementation of ContentEnrichmentService
+type mockEnrichmentService struct{}
+
+func (m *mockEnrichmentService) ExtractMetadata(ctx context.Context, url string) (*interfaces.MetadataResult, error) {
+	return nil, nil
+}
+
+func (m *mockEnrichmentService) ExtractMetadataBatch(ctx context.Context, urls []string) map[string]*interfaces.MetadataResult {
+	return make(map[string]*interfaces.MetadataResult)
+}
+
+func (m *mockEnrichmentService) ExtractColor(ctx context.Context, imageURL string) (*domain.RGBColor, error) {
+	return nil, nil
+}
+
+func (m *mockEnrichmentService) ExtractColorBatch(ctx context.Context, imageURLs []string) map[string]*domain.RGBColor {
+	return make(map[string]*domain.RGBColor)
+}
+
+func (m *mockEnrichmentService) GetCachedColor(ctx context.Context, imageURL string) (*domain.RGBColor, error) {
+	return nil, nil
 }

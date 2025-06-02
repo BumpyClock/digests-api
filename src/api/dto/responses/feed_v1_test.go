@@ -25,7 +25,7 @@ func TestFeedV1Response_AllFieldsPresent(t *testing.T) {
 				Link:          "www.wbur.org",
 				LastUpdated:   time.Now().Format(time.RFC3339),
 				LastRefreshed: time.Now().UTC().Format(time.RFC3339),
-				Published:     "",
+				Published:     time.Now().Format(time.RFC3339),
 				Author: &AuthorV1{
 					Name:  "WBUR",
 					Email: "",

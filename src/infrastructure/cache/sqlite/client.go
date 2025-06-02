@@ -1,6 +1,9 @@
 // ABOUTME: SQLite-based cache implementation for persistent caching
 // ABOUTME: Provides a file-based cache that survives application restarts
 
+// SECURITY: All SQL queries use parameterized statements to prevent SQL injection
+// SECURITY: Additional protection via query builder pattern and input validation
+
 package sqlite
 
 import (
@@ -17,10 +20,16 @@ import (
 type Client struct {
 	db       *sql.DB
 	filePath string
+	logger   Logger // Use local Logger interface to avoid circular dependencies
 }
 
 // NewSQLiteCache creates a new SQLite cache client
 func NewSQLiteCache(filePath string) (*Client, error) {
+	return NewSQLiteCacheWithLogger(filePath, nil)
+}
+
+// NewSQLiteCacheWithLogger creates a new SQLite cache client with optional logger
+func NewSQLiteCacheWithLogger(filePath string, logger Logger) (*Client, error) {
 	if filePath == "" {
 		filePath = "cache.db"
 	}
@@ -39,6 +48,7 @@ func NewSQLiteCache(filePath string) (*Client, error) {
 	client := &Client{
 		db:       db,
 		filePath: filePath,
+		logger:   logger,
 	}
 	
 	// Initialize schema
@@ -69,14 +79,18 @@ func (c *Client) initSchema() error {
 
 // Get retrieves a value from the cache
 func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
-	if key == "" {
-		return nil, errors.New("key cannot be empty")
+	// Validate key
+	if err := ValidateKey(key, c.logger); err != nil {
+		return nil, fmt.Errorf("invalid key: %w", err)
 	}
 	
 	var value []byte
 	var expiry int64
 	
-	query := "SELECT value, expiry FROM cache WHERE key = ? AND expiry > ?"
+	// Use query builder for extra safety
+	cqb := NewCacheQueryBuilder()
+	query, _ := cqb.GetQuery()
+	
 	err := c.db.QueryRowContext(ctx, query, key, time.Now().Unix()).Scan(&value, &expiry)
 	
 	if err == sql.ErrNoRows {
@@ -92,20 +106,20 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 
 // Set stores a value in the cache with TTL
 func (c *Client) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	if key == "" {
-		return errors.New("key cannot be empty")
+	// Validate inputs
+	if err := ValidateKey(key, c.logger); err != nil {
+		return fmt.Errorf("invalid key: %w", err)
 	}
 	
-	if len(value) == 0 {
-		return errors.New("value cannot be empty")
+	if err := ValidateValue(value); err != nil {
+		return fmt.Errorf("invalid value: %w", err)
 	}
 	
 	expiry := time.Now().Add(ttl).Unix()
 	
-	query := `
-		INSERT OR REPLACE INTO cache (key, value, expiry)
-		VALUES (?, ?, ?)
-	`
+	// Use query builder for extra safety
+	cqb := NewCacheQueryBuilder()
+	query, _ := cqb.SetQuery()
 	
 	_, err := c.db.ExecContext(ctx, query, key, value, expiry)
 	if err != nil {
@@ -117,11 +131,15 @@ func (c *Client) Set(ctx context.Context, key string, value []byte, ttl time.Dur
 
 // Delete removes a value from the cache
 func (c *Client) Delete(ctx context.Context, key string) error {
-	if key == "" {
-		return errors.New("key cannot be empty")
+	// Validate key
+	if err := ValidateKey(key, c.logger); err != nil {
+		return fmt.Errorf("invalid key: %w", err)
 	}
 	
-	query := "DELETE FROM cache WHERE key = ?"
+	// Use query builder for extra safety
+	cqb := NewCacheQueryBuilder()
+	query, _ := cqb.DeleteQuery()
+	
 	_, err := c.db.ExecContext(ctx, query, key)
 	
 	if err != nil {
@@ -155,7 +173,9 @@ func (c *Client) cleanupRoutine() {
 
 // cleanup removes expired entries
 func (c *Client) cleanup() {
-	query := "DELETE FROM cache WHERE expiry <= ?"
+	// Use query builder for consistency
+	cqb := NewCacheQueryBuilder()
+	query, _ := cqb.CleanupQuery()
 	_, _ = c.db.Exec(query, time.Now().Unix())
 }
 

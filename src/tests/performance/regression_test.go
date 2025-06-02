@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"digests-app-api/core/domain"
 	"digests-app-api/core/feed"
 	"digests-app-api/core/interfaces"
 	"digests-app-api/infrastructure/cache/memory"
@@ -27,7 +26,7 @@ type perfMockHTTPClient struct {
 	delay time.Duration
 }
 
-func (m *perfMockHTTPClient) Get(ctx context.Context, url string) (interfaces.HTTPResponse, error) {
+func (m *perfMockHTTPClient) Get(ctx context.Context, url string) (interfaces.Response, error) {
 	if m.delay > 0 {
 		time.Sleep(m.delay)
 	}
@@ -51,7 +50,7 @@ func (m *perfMockHTTPClient) Get(ctx context.Context, url string) (interfaces.HT
 	}, nil
 }
 
-func (m *perfMockHTTPClient) Post(ctx context.Context, url string, contentType string, body io.Reader) (interfaces.HTTPResponse, error) {
+func (m *perfMockHTTPClient) Post(ctx context.Context, url string, body io.Reader) (interfaces.Response, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
