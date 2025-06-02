@@ -84,11 +84,18 @@ func TestFeedHandler_RegisterRoutes(t *testing.T) {
 	// Check if routes are registered by checking OpenAPI spec
 	openapi := api.OpenAPI()
 	
-	// Check POST /feeds endpoint
-	if openapi.Paths == nil || openapi.Paths["/feeds"] == nil {
-		t.Error("POST /feeds endpoint not registered")
-	} else if openapi.Paths["/feeds"].Post == nil {
-		t.Error("POST method not registered for /feeds")
+	// Check POST /parse endpoint
+	if openapi.Paths == nil || openapi.Paths["/parse"] == nil {
+		t.Error("POST /parse endpoint not registered")
+	} else if openapi.Paths["/parse"].Post == nil {
+		t.Error("POST method not registered for /parse")
+	}
+	
+	// Check GET /feed endpoint
+	if openapi.Paths == nil || openapi.Paths["/feed"] == nil {
+		t.Error("GET /feed endpoint not registered")
+	} else if openapi.Paths["/feed"].Get == nil {
+		t.Error("GET method not registered for /feed")
 	}
 }
 
@@ -127,7 +134,7 @@ func TestFeedHandler_ParseFeeds_Success(t *testing.T) {
 	handler.RegisterRoutes(api)
 	
 	// Make request
-	resp := api.Post("/feeds", map[string]interface{}{
+	resp := api.Post("/parse", map[string]interface{}{
 		"urls": []string{
 			"https://example.com/feed1.xml",
 			"https://example.com/feed2.xml",
@@ -148,7 +155,7 @@ func TestFeedHandler_ParseFeeds_ValidationError(t *testing.T) {
 	handler.RegisterRoutes(api)
 	
 	// Make request with empty URLs
-	resp := api.Post("/feeds", map[string]interface{}{
+	resp := api.Post("/parse", map[string]interface{}{
 		"urls": []string{},
 	})
 	
@@ -172,7 +179,7 @@ func TestFeedHandler_ParseFeeds_ServiceError(t *testing.T) {
 	handler.RegisterRoutes(api)
 	
 	// Make request
-	resp := api.Post("/feeds", map[string]interface{}{
+	resp := api.Post("/parse", map[string]interface{}{
 		"urls": []string{"https://example.com/feed.xml"},
 	})
 	

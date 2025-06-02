@@ -183,10 +183,9 @@ func (s *FeedService) parseFeedContent(content []byte, feedURL string) (*domain.
 		}
 	}
 
-	// Set image and favicon
+	// Set image
 	if parsedFeed.Image != nil {
 		feed.Image = parsedFeed.Image.URL
-		feed.Favicon = parsedFeed.Image.URL // Use as favicon fallback
 	}
 
 	// Set categories
@@ -198,7 +197,6 @@ func (s *FeedService) parseFeedContent(content []byte, feedURL string) (*domain.
 	if parsedFeed.ITunesExt != nil {
 		if parsedFeed.ITunesExt.Image != "" {
 			feed.Image = parsedFeed.ITunesExt.Image
-			feed.Favicon = parsedFeed.ITunesExt.Image
 		}
 		feed.Subtitle = parsedFeed.ITunesExt.Subtitle
 	}
